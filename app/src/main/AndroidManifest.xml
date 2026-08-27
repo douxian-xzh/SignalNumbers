@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
+    <application
+        android:allowBackup="false"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
+        android:supportsRtl="true"
+        android:theme="@style/Theme.SignalNumbers">
+
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data android:name="xposeddescription" android:value="请求应用：系统界面（com.android.systemui）；将蜂窝与 Wi-Fi 信号格替换为实时 dBm 数字" />
+        <meta-data android:name="xposedminversion" android:value="82" />
+
+        <activity
+            android:name=".ui.SettingsActivity"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="de.robv.android.xposed.category.MODULE_SETTINGS" />
+            </intent-filter>
+        </activity>
+
+        <activity-alias
+            android:name=".LauncherAlias"
+            android:enabled="true"
+            android:exported="true"
+            android:icon="@drawable/ic_launcher"
+            android:label="@string/app_name"
+            android:targetActivity=".ui.SettingsActivity">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+        </activity-alias>
+
+        <provider
+            android:name=".config.ConfigProvider"
+            android:authorities="com.xinsu.signalnumbers.config"
+            android:directBootAware="true"
+            android:exported="true"
+            tools:ignore="ExportedContentProvider" />
+    </application>
+</manifest>
