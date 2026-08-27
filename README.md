@@ -2,6 +2,8 @@
 
 适用于 Vector/Xposed 的 SystemUI 模块。它在运行时把状态栏蜂窝与 Wi-Fi 信号图标替换为实时 dBm 数字，不修改 `SystemUI.apk`，不使用悬浮窗、常驻通知或高频轮询。
 
+English: [README.en.md](README.en.md)
+
 ## 当前兼容性结论
 
 - **小米/Redmi/POCO + 澎湃 OS（HyperOS）3 / Android 16**：当前版本已完成目标设备实机验证，用户可以直接安装模块 APK，在 Vector/Xposed 中只勾选“系统界面（`com.android.systemui`）”后重载 SystemUI。
