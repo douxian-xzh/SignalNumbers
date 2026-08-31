@@ -22,4 +22,6 @@ data class InjectedSignalView(
     var subscriptionId: Int = -1,
     var slotIndex: Int = -1,
     var appearanceTint: Int? = null,
+    /** Sticky classification for PJZ110's lower duplicate shade row. */
+    var expandedShadeSignalRow: Boolean = false,
 )

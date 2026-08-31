@@ -24,7 +24,7 @@
 - 主要 Wi-Fi View：`com.android.systemui.statusbar.pipeline.wifi.ui.view.ModernStatusBarWifiView`。
 - 双卡容器：LineageOS 的 `stacked_mobile` Compose 容器。
 - 展开通知栏相关容器：`ModernShadeCarrierGroupMobileView` 及其 Shade 祖先层级。
-- 已实现：按订阅和卡槽渲染双卡、Compose/传统 View 显示隔离、展开通知栏重复信号行边界、桌面和锁屏状态保护、跟随 SystemUI appearance tint。
+- 已实现：按订阅和卡槽渲染双卡、Compose/传统 View 显示隔离、展开通知栏重复信号行边界、桌面和锁屏状态保护、跟随 SystemUI appearance tint。下方重复行在首次识别后保留身份，兼容 SystemUI 重排时的临时父级变化。
 
 PJZ110、LineageOS 其他版本以及其他厂商系统仍属于适配阶段。未命中明确设备模式时使用 `aosp` 通用模式，不保证布局、颜色、双卡顺序或信号 View 可识别。
 

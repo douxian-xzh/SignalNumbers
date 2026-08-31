@@ -2,6 +2,8 @@
 
 SignalNumbers is an Android SystemUI module for Vector/Xposed. It replaces cellular and Wi-Fi signal icons with live dBm values at runtime. It does not modify, resign, or replace the vendor `SystemUI.apk`, and it does not use floating windows, persistent notifications, or high-frequency polling.
 
+The current release is `v1.0.39`. Xiaomi/HyperOS 3 is the stable target; other systems remain under adaptation.
+
 [中文说明](README.md)
 
 ## Compatibility status

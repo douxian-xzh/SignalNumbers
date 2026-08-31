@@ -304,6 +304,10 @@ class ViewInjector(
         val oldAlpha = image.alpha
         val subId = if (role == ViewRole.MOBILE) resolveSubscriptionId(image, hintedSubId) else -1
         val slot = if (role == ViewRole.MOBILE) resolveSlotIndex(image) else -1
+        // SystemUI may temporarily reparent this image while rebuilding the
+        // shade. Remember a lower duplicate row as soon as it is identifiable,
+        // so a transient parent chain cannot make it render on top of Compose.
+        val expandedShadeSignalRow = isExpandedShadeSignal(image)
         val wrapper = FrameLayout(image.context).apply {
             layoutParams = copyLayoutParams(oldParams, numberWidth(image, role))
             minimumWidth = dp(image, if (config.unitMode == ModuleConfig.UNIT_DBM) 32 else 25)
@@ -345,6 +349,7 @@ class ViewInjector(
             val injected = InjectedSignalView(
                 role, image, wrapper, text, parent, index, oldParams, oldAlpha,
                 networkTypes, networkTypes.associateWith { it.visibility }, mobileActivityViews, subId, slot,
+                expandedShadeSignalRow = expandedShadeSignalRow,
             )
             byOriginal[image] = injected
             networkTypes.forEach { byNetworkType[it] = injected }
@@ -481,7 +486,7 @@ class ViewInjector(
         if (!config.enabled || config.safeMode) return restore(view)
         view.wrapper.visibility = View.VISIBLE
         if ((view.role == ViewRole.MOBILE || view.role == ViewRole.WIFI) &&
-            shouldHideExpandedShadeSignalRow(view.original)
+            shouldHideExpandedShadeSignalRow(view)
         ) {
             // Hide only the duplicate signal row below the status bar while
             // the shade is fully expanded. Top status-bar, desktop, and
@@ -692,7 +697,7 @@ class ViewInjector(
     private fun isExpandedShadeAppearance(): Boolean = shadeExpanded && keyguardLocked != true
 
     private fun expandedShadeFallbackTint(view: InjectedSignalView): Int? =
-        if (isExpandedShadeAppearance() && isExpandedShadeSignal(view.original)) {
+        if (isExpandedShadeAppearance() && isExpandedShadeSignal(view)) {
             fallbackAppearanceTint(view.role)
         } else {
             null
@@ -711,6 +716,21 @@ class ViewInjector(
         val hideOnKeyguard = compatibility.hideExpandedShadeSignalRowOnKeyguard && keyguardLocked == true
         return hideWhenCollapsed || hideInExpandedShade || hideOnKeyguard
     }
+
+    private fun shouldHideExpandedShadeSignalRow(view: InjectedSignalView): Boolean {
+        // Keep the classification sticky across SystemUI reparenting. The
+        // current ancestor chain is still checked to catch rows discovered
+        // before their final shade container is attached.
+        if (isExpandedShadeSignal(view.original)) view.expandedShadeSignalRow = true
+        if (!view.expandedShadeSignalRow) return false
+        val hideWhenCollapsed = compatibility.showExpandedShadeSignalRowOnlyWhenExpanded && !isExpandedShadeAppearance()
+        val hideInExpandedShade = compatibility.hideExpandedShadeSignalRow && isExpandedShadeAppearance()
+        val hideOnKeyguard = compatibility.hideExpandedShadeSignalRowOnKeyguard && keyguardLocked == true
+        return hideWhenCollapsed || hideInExpandedShade || hideOnKeyguard
+    }
+
+    private fun isExpandedShadeSignal(view: InjectedSignalView): Boolean =
+        view.expandedShadeSignalRow || isExpandedShadeSignal(view.original)
 
     private fun shouldHideTraditionalMobileView(view: InjectedSignalView): Boolean {
         if (view.role != ViewRole.MOBILE ||
