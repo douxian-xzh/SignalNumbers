@@ -8,9 +8,9 @@ class OnePlus13Android16Compatibility : AospCompatibility() {
     override val name = "OnePlus 13 / Android 16"
     override val mode = CompatibilityMode.PJZ110_LINEAGE
     override val hideExpandedShadeSignalRow = false
-    override val showExpandedShadeSignalRowOnlyWhenExpanded = true
-    override val hideExpandedShadeSignalRowOnKeyguard = true
-    override val hideTraditionalMobileViewsWhenCompose = true
+    override val showExpandedShadeSignalRowOnlyWhenExpanded = false
+    override val hideExpandedShadeSignalRowOnKeyguard = false
+    override val hideTraditionalMobileViewsWhenCompose = false
     override val mergedSignalDisplay = true
     override val batteryViewClassNames = setOf(
         "com.android.systemui.battery.BatteryMeterView",

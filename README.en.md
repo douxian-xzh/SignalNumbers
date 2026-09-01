@@ -2,7 +2,7 @@
 
 SignalNumbers is an Android SystemUI module for Vector/Xposed. It replaces cellular and Wi-Fi signal icons with live dBm values at runtime. It does not modify, resign, or replace the vendor `SystemUI.apk`, and it does not use floating windows, persistent notifications, or high-frequency polling.
 
-The current release is `v1.0.40`. Xiaomi/HyperOS 3 is the stable target; PJZ110/LineageOS remains under adaptation.
+The current release is `v1.0.41`. Xiaomi/HyperOS 3 is the stable target; PJZ110/LineageOS remains under adaptation.
 
 [中文说明](README.md)
 
@@ -25,7 +25,7 @@ The Xiaomi and PJZ110 profiles are isolated by runtime device detection. PJZ110-
 - Uses event-driven signal updates and pauses visual updates while the screen is off.
 - Includes a safe mode after repeated injection failures and a setting to restore the original icons.
 - Requests only the `com.android.systemui` module scope.
-- On PJZ110, merges SIM 1, SIM 2, Wi-Fi (when connected), and battery percentage into one status-bar text element while hiding the native counterparts to avoid overlapping layouts.
+- On PJZ110, merges SIM 1, SIM 2, Wi-Fi (when connected), and battery percentage into one element shown on the desktop, lock screen, collapsed shade, and fully expanded shade; native counterparts remain hidden to prevent overlapping layouts.
 
 ## Installation
 

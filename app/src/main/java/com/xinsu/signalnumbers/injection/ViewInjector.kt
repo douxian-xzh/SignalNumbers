@@ -53,6 +53,8 @@ class ViewInjector(
     private var shadeExpanded = false
     private var mobileAppearanceTint: Int? = null
     private var wifiAppearanceTint: Int? = null
+    private var statusAppearanceTint: Int? = null
+    private var shadeAppearanceTint: Int? = null
 
     fun scanAndInject(root: View, forcedRole: ViewRole? = null, hintedSubId: Int = -1) = guarded {
         locator.locate(root, forcedRole).forEach { candidate ->
@@ -258,6 +260,8 @@ class ViewInjector(
             else -> Unit
         }
         if (tint != null && tint ushr 24 != 0) {
+            val expandedSource = isExpandedShadeSignal(root)
+            if (expandedSource) shadeAppearanceTint = tint else statusAppearanceTint = tint
             var updated = 0
             liveViews().forEach { view ->
                 if (!isDescendant(view.wrapper, root)) return@forEach
@@ -270,12 +274,30 @@ class ViewInjector(
                 updated++
             }
             if (updated > 0) onEvent("appearance root=${root.javaClass.name} tint=${Integer.toHexString(tint)} injected=$updated")
+            updateMergedAppearance(root, tint, expandedSource)
         }
         onComposeAppearanceChanged(root, tint)
         if (appearanceSourceRole == ViewRole.MOBILE) {
             composeMobile.values.toList().forEach {
                 copyComposeTint(it)
             }
+        }
+    }
+
+    private fun updateMergedAppearance(source: ViewGroup, tint: Int, expandedSource: Boolean) {
+        if (!compatibility.mergedSignalDisplay) return
+        var updated = 0
+        mergedByBattery.values.toList().forEach { view ->
+            if (isExpandedShadeSignal(view.original) != expandedSource) return@forEach
+            view.appearanceTint = tint
+            copyMergedTint(view)
+            updated++
+        }
+        if (updated > 0) {
+            onEvent(
+                "merged appearance root=${source.javaClass.name} " +
+                    "expanded=$expandedSource tint=${Integer.toHexString(tint)} updated=$updated",
+            )
         }
     }
 
@@ -723,12 +745,14 @@ class ViewInjector(
 
     private fun mergedHostVisibility(view: MergedSignalView): Int {
         if (view.requestedVisibility == View.VISIBLE) return View.VISIBLE
-        // The legacy BatteryMeterView is declared GONE in PJZ110's layout even
-        // though its parent is the slot that should carry the replacement. If
-        // it is selected as a fallback (no Compose battery anchor exists), the
-        // merged element must still be visible while its parent participates in
-        // layout. Parent visibility continues to gate the result.
-        if (isLegacyBatteryView(view.original) && view.originalParent.visibility == View.VISIBLE) {
+        // The original battery child is only a layout anchor. PJZ110 can mark
+        // either the legacy or Compose child GONE while the surrounding status
+        // region remains visible. Keep the merged element visible in that
+        // region so lockscreen and desktop do not lose the replacement.
+        val isResourceAnchor = locator.resourceName(view.original) in compatibility.batteryViewResourceNames
+        if ((isLegacyBatteryView(view.original) || isResourceAnchor) &&
+            view.originalParent.visibility == View.VISIBLE
+        ) {
             return View.VISIBLE
         }
         return view.requestedVisibility
@@ -811,10 +835,11 @@ class ViewInjector(
     private fun copyMergedTint(view: MergedSignalView) {
         val percentView = findBatteryPercentView(view.original)
         val childTint = percentView?.currentTextColor?.takeIf { it ushr 24 != 0 }
+        val regionTint = if (isExpandedShadeSignal(view.original)) shadeAppearanceTint else statusAppearanceTint
         val tint = if (isForcedWhite()) {
             Color.WHITE
         } else {
-            view.appearanceTint ?: childTint ?: mobileAppearanceTint ?: wifiAppearanceTint
+            view.appearanceTint ?: childTint ?: regionTint ?: mobileAppearanceTint ?: wifiAppearanceTint
         }
         if (tint != null) {
             view.text.setTextColor(tint)
