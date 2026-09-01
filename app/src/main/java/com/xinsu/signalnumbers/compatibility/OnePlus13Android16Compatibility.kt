@@ -20,7 +20,12 @@ class OnePlus13Android16Compatibility : AospCompatibility() {
         "battery_meter_composable_view",
     )
     override val forceWhiteInExpandedShade = false
-    override val forceWhiteOnKeyguard = false
+    // PJZ110's lockscreen is a dark surface, but its transient appearance
+    // callbacks can carry the expanded-shade black tint into the lockscreen.
+    override val forceWhiteOnKeyguard = true
+    // Its fully expanded QS surface is light even when it is opened over the
+    // dark lockscreen, so the merged line must follow the surrounding black text.
+    override val forceBlackInExpandedKeyguardShade = true
     override val appearanceTintSourceClassNames = mapOf(
         ViewRole.MOBILE to setOf(
             "com.android.systemui.statusbar.pipeline.mobile.ui.view.ModernStatusBarMobileView",

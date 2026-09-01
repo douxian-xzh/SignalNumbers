@@ -56,6 +56,8 @@ interface CompatibilityAdapter {
     val forceWhiteInExpandedShade: Boolean get() = true
     /** Whether injected signal text is forced white while the keyguard is showing. */
     val forceWhiteOnKeyguard: Boolean get() = true
+    /** Whether injected signal text is forced black while fully expanded QS is open over keyguard. */
+    val forceBlackInExpandedKeyguardShade: Boolean get() = false
     /** Traditional SystemUI View classes whose appearance tint can be shared with Compose/shade fallbacks. */
     val appearanceTintSourceClassNames: Map<ViewRole, Set<String>> get() = emptyMap()
 

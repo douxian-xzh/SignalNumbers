@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-09-01
+更新：2026-09-02
 
 ## 项目定位
 
@@ -24,6 +24,7 @@ SignalNumbers 是一个面向 Vector/Xposed 的 Android SystemUI 模块，在运
 - PJZ110 完全展开通知栏会在窗口绘制前重新发现当前可见的 `battery_meter_composable_view`；系统重建或切换状态栏布局时，不再误用已隐藏的旧电量槽作为合并锚点。
 - PJZ110 `1.0.43` 已在锁屏实机验证双卡数字可见，并隐藏锁屏原生右侧组避免电量百分比重复；该版本仅改动合并模式路径，小米适配路径保持不变。
 - PJZ110 合并元素的 appearance tint 按顶部/桌面锁屏区域和展开通知栏区域分别保存，避免通知栏的黑色 tint 泄漏到深色桌面；旧的锁屏和收起状态隐藏限制已移除。
+- PJZ110 锁屏与完全展开 QS 的状态切换使用实际的 `QuickSettingsControllerImpl#setExpanded` 回调：锁屏合并行保持白色，浅色 QS 覆盖锁屏时切换黑色，收回后恢复白色；锁屏状态回调不再清零真实 QS 状态，避免信号行被误隐藏。
 - PJZ110 合并模式持续隐藏原生 Compose 蜂窝层，拦截 SystemUI 晚到的 appearance、可见性和透明度回写，避免桌面重新出现黑色原生信号并与合并元素重叠。
 - 模块 Manifest、Vector/Xposed scope 和设置页均明确标注请求应用为 `com.android.systemui`。
 - 构建使用 Gradle Wrapper，可在无额外 Gradle 安装的 Windows 环境复现。

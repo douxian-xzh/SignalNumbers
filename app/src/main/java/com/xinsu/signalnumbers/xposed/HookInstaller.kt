@@ -32,11 +32,15 @@ class HookInstaller(
     private var controlCenterExpansionMirrorsInstalled = false
     @Volatile
     private var shadeStateManagerMirrorInstalled = false
+    @Volatile
+    private var quickSettingsExpansionMirrorInstalled = false
     private var shadeExpansionRetryCount = 0
     private var shadeStateManagerRetryCount = 0
+    private var quickSettingsExpansionRetryCount = 0
     private val shadeClassName = "com.android.systemui.shade.NotificationPanelViewController"
     private val shadeViewClassName = "com.android.systemui.shade.NotificationPanelView"
     private val shadeStateManagerClassName = "com.android.systemui.shade.ShadeExpansionStateManager"
+    private val quickSettingsClassName = "com.android.systemui.shade.QuickSettingsControllerImpl"
     private val controlCenterClassName = "com.miui.systemui.controlcenter.container.ControlCenterExpandControllerDelegate"
 
     fun install() {
@@ -52,6 +56,7 @@ class HookInstaller(
         installShadeViewMirror()
         installShadeExpansionMirrors()
         installShadeStateManagerMirror()
+        installQuickSettingsExpansionMirror()
         installControlCenterExpansionMirrors()
     }
 
@@ -364,11 +369,17 @@ class HookInstaller(
         XposedBridge.hookAllMethods(ClassLoader::class.java, "loadClass", object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) = guarded {
                 val className = param.args.firstOrNull() as? String ?: return@guarded
-                if (className != shadeClassName && className != shadeStateManagerClassName && className != controlCenterClassName) return@guarded
+                if (
+                    className != shadeClassName &&
+                    className != shadeStateManagerClassName &&
+                    className != quickSettingsClassName &&
+                    className != controlCenterClassName
+                ) return@guarded
                 val loader = param.thisObject as? ClassLoader ?: return@guarded
                 when (className) {
                     shadeClassName -> installShadeExpansionMirrors(loader)
                     shadeStateManagerClassName -> installShadeStateManagerMirror(loader)
+                    quickSettingsClassName -> installQuickSettingsExpansionMirror(loader)
                     else -> installControlCenterExpansionMirrors(loader)
                 }
             }
@@ -421,9 +432,10 @@ class HookInstaller(
         guarded {
             val hooks = XposedBridge.hookAllMethods(clazz, "setExpandedFraction", object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) = guarded {
-                        val fraction = param.args.firstOrNull { it is Float } as? Float ?: return@guarded
-                        // Only the fully expanded panel hides signal rows. The
-                        // intermediate drag position remains visually intact.
+                    val fraction = param.args.firstOrNull { it is Float } as? Float
+                        ?: return@guarded
+                    // Only the fully expanded panel hides signal rows. The
+                    // intermediate drag position remains visually intact.
                     injector.onShadeExpansionChanged(fraction >= 0.99f)
                 }
             })
@@ -499,6 +511,45 @@ class HookInstaller(
         if (shadeStateManagerRetryCount >= 30) return
         shadeStateManagerRetryCount++
         main.postDelayed({ guarded { installShadeStateManagerMirror(loader) } }, 1_000L)
+    }
+
+    private fun installQuickSettingsExpansionMirror(loader: ClassLoader = classLoader) {
+        if (quickSettingsExpansionMirrorInstalled) return
+        val clazz = findSystemUiClass(quickSettingsClassName, loader) ?: run {
+            scheduleQuickSettingsExpansionRetry(loader)
+            return
+        }
+        var installed = false
+        guarded {
+            val hooks = XposedBridge.hookAllMethods(clazz, "setExpanded", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) = guarded {
+                    val expanded = param.args.firstOrNull { it is Boolean } as? Boolean
+                        ?: return@guarded
+                    injector.onShadeQsExpandedChanged(expanded)
+                }
+            })
+            if (hooks.isNotEmpty()) installed = true
+        }
+        guarded {
+            val hooks = XposedBridge.hookAllMethods(clazz, "getExpanded", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) = guarded {
+                    (param.result as? Boolean)?.let(injector::onShadeQsExpandedChanged)
+                }
+            })
+            if (hooks.isNotEmpty()) installed = true
+        }
+        if (installed) {
+            quickSettingsExpansionMirrorInstalled = true
+            onEvent("hook-installed", "$quickSettingsClassName QS expansion callbacks")
+        } else {
+            scheduleQuickSettingsExpansionRetry(loader)
+        }
+    }
+
+    private fun scheduleQuickSettingsExpansionRetry(loader: ClassLoader) {
+        if (quickSettingsExpansionRetryCount >= 30) return
+        quickSettingsExpansionRetryCount++
+        main.postDelayed({ guarded { installQuickSettingsExpansionMirror(loader) } }, 1_000L)
     }
 
     private fun installControlCenterExpansionMirrors(loader: ClassLoader = classLoader) {

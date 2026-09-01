@@ -50,6 +50,8 @@ class ViewInjector(
     private val visibilityGuard = ThreadLocal<Boolean>()
     private var keyguardLocked: Boolean? = null
     private var shadePanelFullyExpanded = false
+    /** Whether the Quick Settings surface is actually open over keyguard. */
+    private var shadeQsExpanded = false
     private var controlCenterFullyExpanded = false
     private var controlCenterVisible = false
     private var shadeExpanded = false
@@ -336,6 +338,15 @@ class ViewInjector(
         updateShadeState("notification-shade")
     }
 
+    fun onShadeQsExpandedChanged(expanded: Boolean) = guarded {
+        if (shadeQsExpanded == expanded) return@guarded
+        val previousForcedTint = forcedTextTint()
+        shadeQsExpanded = expanded
+        updateShadeState("quick-settings")
+        if (previousForcedTint != forcedTextTint()) refreshInjectedTints()
+        onEvent("shade quick-settings expanded=$expanded")
+    }
+
     fun onControlCenterFractionChanged(fraction: Float) = guarded {
         // HyperOS can report the ordinary NotificationPanel as collapsed while
         // its control center is still fully visible. Keep this source separate
@@ -352,9 +363,24 @@ class ViewInjector(
     }
 
     fun onStatusRootDraw(root: ViewGroup) = guarded {
-        val manager = root.context.getSystemService(KeyguardManager::class.java)
-        onKeyguardStateChanged(manager?.isKeyguardLocked == true, root)
-        if (keyguardLocked == true) hideKeyguardNativeSystemIcons(root)
+        // KeyguardStatusBarView is a lockscreen-only child, but its context
+        // can briefly report an unlocked KeyguardManager while the parent
+        // NotificationShadeWindowView is still showing the keyguard. Do not
+        // let that transient child callback hide the lockscreen replacement.
+        val isKeyguardStatusRoot = root.javaClass.name ==
+            "com.android.systemui.statusbar.phone.KeyguardStatusBarView"
+        if (!isKeyguardStatusRoot) {
+            val manager = root.context.getSystemService(KeyguardManager::class.java)
+            // The root view's context can briefly report an unlocked
+            // KeyguardManager while the window is still showing keyguard.
+            // Only promote a confirmed locked state here; demotion is left
+            // to the KeyguardStateController mirror, which is authoritative.
+            if (manager?.isKeyguardLocked == true) onKeyguardStateChanged(true, root)
+        }
+        if (keyguardLocked == true) {
+            ensureKeyguardMergedView(root)
+            hideKeyguardNativeSystemIcons(root)
+        }
         if (compatibility.mergedSignalDisplay && shadeAppearanceExpanded) {
             // PJZ110 creates a different Compose battery slot for the fully
             // expanded shade. Its slot can appear after the initial layout
@@ -393,6 +419,10 @@ class ViewInjector(
             shadeAppearanceTint = null
             shadeMobileAppearanceTint = null
             shadeWifiAppearanceTint = null
+        } else {
+            // QS cannot remain a keyguard surface after unlocking. Clear the
+            // mirror so a later lock starts from the closed state.
+            shadeQsExpanded = false
         }
 
         if (locked && root != null) ensureKeyguardMergedView(root)
@@ -680,10 +710,28 @@ class ViewInjector(
         }
     }
 
+    private fun refreshInjectedTints() {
+        liveViews().forEach {
+            copyTint(it)
+            it.text.alpha = it.originalAlpha
+        }
+        composeMobile.values.toList().forEach(::copyComposeTint)
+        mergedByBattery.values.toList().forEach(::copyMergedTint)
+        keyguardMergedByContainer.values.toList().forEach(::copyKeyguardMergedTint)
+    }
+
     private fun isForcedWhite(): Boolean =
-        (keyguardLocked == true && compatibility.forceWhiteOnKeyguard) ||
+        (keyguardLocked == true && !shadeQsExpanded && compatibility.forceWhiteOnKeyguard) ||
             (shadeExpanded && compatibility.forceWhiteInExpandedShade) ||
             controlCenterVisible
+
+    private fun forcedTextTint(): Int? = when {
+        keyguardLocked == true &&
+            shadeQsExpanded &&
+            compatibility.forceBlackInExpandedKeyguardShade -> Color.BLACK
+        isForcedWhite() -> Color.WHITE
+        else -> null
+    }
 
     /**
      * The fully expanded shade has a second signal row below the status bar.
@@ -877,7 +925,18 @@ class ViewInjector(
         if (!compatibility.mergedSignalDisplay || keyguardLocked != true) return
         hideKeyguardNativeSystemIcons(root)
         val candidates = mutableListOf<View>()
-        findNamedViews(root, setOf("status_bar_end_side_container"), candidates)
+        // The lockscreen's visible top row can be exposed as
+        // `shade_header_system_icons`; other SystemUI revisions use
+        // `status_bar_end_side_container` or `system_icons_container`.
+        findNamedViews(
+            root,
+            setOf(
+                "status_bar_end_side_container",
+                "shade_header_system_icons",
+                "system_icons_container",
+            ),
+            candidates,
+        )
         val container = candidates
             .asSequence()
             .filterIsInstance<ViewGroup>()
@@ -972,12 +1031,10 @@ class ViewInjector(
         // The visible lockscreen status-bar appearance callback is the
         // authoritative source. While the shade is expanded over keyguard,
         // use its appearance tint instead of the lockscreen-only tint.
-        val tint = if (isForcedWhite()) {
-            Color.WHITE
-        } else if (isExpandedShadeTintAppearance()) {
-            expandedShadeTint() ?: statusAppearanceTint
-        } else {
-            statusAppearanceTint
+        val tint = forcedTextTint() ?: when {
+            keyguardLocked == true && shadeQsExpanded -> expandedShadeTint() ?: statusAppearanceTint
+            isExpandedShadeTintAppearance() -> expandedShadeTint() ?: statusAppearanceTint
+            else -> statusAppearanceTint
         }
         view.text.setTextColor(tint ?: Color.WHITE)
     }
@@ -1142,9 +1199,7 @@ class ViewInjector(
         val percentView = findBatteryPercentView(view.original)
         val childTint = percentView?.currentTextColor?.takeIf { it ushr 24 != 0 }
         val regionTint = if (isExpandedShadeSignal(view.original)) shadeAppearanceTint else statusAppearanceTint
-        val tint = if (isForcedWhite()) {
-            Color.WHITE
-        } else if (isExpandedShadeTintAppearance()) {
+        val tint = forcedTextTint() ?: if (isExpandedShadeTintAppearance()) {
             // The merged battery anchors can be shared by multiple surfaces,
             // so their cached appearanceTint may still be the collapsed
             // status-bar color. The expanded shade's tint must win while it
@@ -1315,8 +1370,9 @@ class ViewInjector(
     }
 
     private fun copyTint(view: InjectedSignalView) {
-        if (isForcedWhite()) {
-            view.text.setTextColor(Color.WHITE)
+        val forcedTint = forcedTextTint()
+        if (forcedTint != null) {
+            view.text.setTextColor(forcedTint)
         } else {
             // The source tint is a PJZ110 shade-only fallback. Applying it to
             // every injected view makes a desktop/lockscreen number inherit
@@ -1341,8 +1397,9 @@ class ViewInjector(
     }
 
     private fun copyComposeTint(view: ComposeSignalView) {
+        val forcedTint = forcedTextTint()
         when {
-            isForcedWhite() -> view.text.setTextColor(Color.WHITE)
+            forcedTint != null -> view.text.setTextColor(forcedTint)
             isExpandedShadeAppearance() && mobileAppearanceTint != null -> view.text.setTextColor(mobileAppearanceTint!!)
             view.appearanceTint != null -> view.text.setTextColor(view.appearanceTint!!)
         }
