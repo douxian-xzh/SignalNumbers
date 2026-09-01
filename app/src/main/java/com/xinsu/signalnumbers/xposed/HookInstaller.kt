@@ -255,6 +255,61 @@ class HookInstaller(
     }
 
     private fun installKeyguardAppearanceMirrors() {
+        if (compatibility.mergedSignalDisplay) {
+            guarded {
+                // PJZ110 can load PhoneStatusBarView after the module starts,
+                // so the profile-specific onDraw hook may miss the class.
+                // View.draw is already available and gives the injector a
+                // reliable late entry point without adding anything to the
+                // Xiaomi/non-merged compatibility paths.
+                val hooks = XposedBridge.hookAllMethods(View::class.java, "draw", object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) = guarded {
+                        val root = param.thisObject as? ViewGroup ?: return@guarded
+                        when (root.javaClass.name) {
+                            "com.android.systemui.statusbar.phone.PhoneStatusBarView",
+                            "com.android.systemui.statusbar.window.StatusBarWindowView",
+                            "com.android.systemui.shade.NotificationShadeWindowView",
+                            -> injector.onStatusRootDraw(root)
+                        }
+                    }
+                })
+                if (hooks.isNotEmpty()) onEvent("hook-installed", "merged status root View#draw count=${hooks.size}")
+            }
+            guarded {
+                // The keyguard header lives in NotificationShadeWindowView,
+                // not in PhoneStatusBarView. Run before its children draw so
+                // the native keyguard battery group cannot overlap the PJZ110
+                // merged element.
+                val hooks = XposedBridge.hookAllMethods(ViewGroup::class.java, "dispatchDraw", object : XC_MethodHook() {
+                    override fun beforeHookedMethod(param: MethodHookParam) = guarded {
+                        val root = param.thisObject as? ViewGroup ?: return@guarded
+                        when (root.javaClass.name) {
+                            "com.android.systemui.shade.NotificationShadeWindowView",
+                            "com.android.systemui.statusbar.phone.KeyguardStatusBarView",
+                            -> injector.onStatusRootDraw(root)
+                        }
+                    }
+                })
+                if (hooks.isNotEmpty()) onEvent("hook-installed", "merged keyguard ViewGroup#dispatchDraw count=${hooks.size}")
+            }
+            listOf(
+                "com.android.systemui.shade.NotificationShadeWindowView" to listOf("onDraw"),
+                "com.android.systemui.statusbar.phone.KeyguardStatusBarView" to listOf("onFinishInflate", "onLayout"),
+            ).forEach { (className, methods) ->
+                val clazz = XposedHelpers.findClassIfExists(className, classLoader) ?: return@forEach
+                methods.forEach { method ->
+                    guarded {
+                        val hooks = XposedBridge.hookAllMethods(clazz, method, object : XC_MethodHook() {
+                            override fun afterHookedMethod(param: MethodHookParam) = guarded {
+                                val root = param.thisObject as? ViewGroup ?: return@guarded
+                                injector.onStatusRootDraw(root)
+                            }
+                        })
+                        if (hooks.isNotEmpty()) onEvent("hook-installed", "$className#$method count=${hooks.size}")
+                    }
+                }
+            }
+        }
         compatibility.hookPoints
             .filter { it.role == ViewRole.STATUS_ROOT }
             .map { it.className }

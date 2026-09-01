@@ -41,6 +41,8 @@ class ViewInjector(
     private val byMobileActivity = WeakHashMap<View, InjectedSignalView>()
     private val composeMobile = WeakHashMap<ViewGroup, ComposeSignalView>()
     private val mergedByBattery = WeakHashMap<ViewGroup, MergedSignalView>()
+    private val keyguardMergedByContainer = WeakHashMap<ViewGroup, KeyguardMergedSignalView>()
+    private val keyguardHiddenSystemIcons = WeakHashMap<View, HiddenViewState>()
     private val all = mutableListOf<WeakReference<InjectedSignalView>>()
     private var config = ModuleConfig()
     private var snapshot = SignalSnapshot()
@@ -335,6 +337,7 @@ class ViewInjector(
     fun onStatusRootDraw(root: ViewGroup) = guarded {
         val manager = root.context.getSystemService(KeyguardManager::class.java)
         onKeyguardStateChanged(manager?.isKeyguardLocked == true, root)
+        if (keyguardLocked == true) hideKeyguardNativeSystemIcons(root)
     }
 
     fun onKeyguardStateChanged(locked: Boolean) = guarded {
@@ -345,7 +348,17 @@ class ViewInjector(
         val shadeWasExpanded = shadeExpanded
         val forcedWhiteBefore = isForcedWhite()
         val keyguardStateChanged = keyguardLocked != locked
-        if (!keyguardStateChanged && !(locked && shadeWasExpanded)) return
+        if (!keyguardStateChanged && !(locked && shadeWasExpanded)) {
+            // The lockscreen status bar is rebuilt independently from the
+            // desktop/shade battery anchors. Keep trying on every status-root
+            // draw so a late-created visible container can receive the merged
+            // element even when the keyguard state itself did not change.
+            if (locked && root != null) {
+                ensureKeyguardMergedView(root)
+                keyguardMergedByContainer.values.toList().forEach(::renderKeyguardMerged)
+            }
+            return
+        }
         keyguardLocked = locked
         if (locked) {
             shadePanelFullyExpanded = false
@@ -353,6 +366,9 @@ class ViewInjector(
             controlCenterVisible = false
             shadeExpanded = false
         }
+
+        if (locked && root != null) ensureKeyguardMergedView(root)
+        if (!locked) restoreKeyguardNativeSystemIcons()
 
         // Re-render on every keyguard transition. PJZ110 reuses the lower
         // shade carrier row in its lockscreen hierarchy, so visibility and
@@ -369,6 +385,7 @@ class ViewInjector(
         }
         composeMobile.values.toList().forEach(::copyComposeTint)
         mergedByBattery.values.toList().forEach(::copyMergedTint)
+        keyguardMergedByContainer.values.toList().forEach(::renderKeyguardMerged)
         if (updated > 0) onEvent("keyguard locked=$locked root=${root?.javaClass?.name ?: "all"} tint=${if (locked) "ffffffff" else "original"} forced=${isForcedWhite()} wasForced=$forcedWhiteBefore injected=$updated")
     }
 
@@ -473,11 +490,14 @@ class ViewInjector(
     }
 
     fun restoreAll() = guarded {
+        restoreKeyguardNativeSystemIcons()
+        keyguardMergedByContainer.values.toList().forEach(::restoreKeyguardMerged)
         mergedByBattery.values.toList().forEach(::restoreMerged)
         liveViews().forEach(::restore)
         composeMobile.values.toList().forEach(::restoreCompose)
         composeMobile.clear()
         mergedByBattery.clear()
+        keyguardMergedByContainer.clear()
         byOriginal.clear()
         byNetworkType.clear()
         byMobileActivity.clear()
@@ -567,6 +587,7 @@ class ViewInjector(
             applyMergedStyle(it)
             renderMerged(it)
         }
+        keyguardMergedByContainer.values.toList().forEach(::renderKeyguardMerged)
     }
 
     private fun updateShadeState(source: String) {
@@ -776,6 +797,175 @@ class ViewInjector(
         view.host.alpha = view.requestedAlpha
         copyMergedTint(view)
         onEvent("rendered merged status text=${view.text.text} visibility=${view.host.visibility} anchor=${locator.resourceName(view.original)}")
+    }
+
+    /**
+     * PJZ110's lockscreen battery composables sit below a GONE/INVISIBLE
+     * branch of the status-bar hierarchy. They are useful as a desktop
+     * layout anchor, but no child of that branch can be drawn on the
+     * lockscreen. This overlay is attached directly to the visible end-side
+     * container instead, which is shared by the visible lockscreen status bar.
+     */
+    private fun ensureKeyguardMergedView(root: ViewGroup) {
+        if (!compatibility.mergedSignalDisplay || keyguardLocked != true) return
+        hideKeyguardNativeSystemIcons(root)
+        val candidates = mutableListOf<View>()
+        findNamedViews(root, setOf("status_bar_end_side_container"), candidates)
+        val container = candidates
+            .asSequence()
+            .filterIsInstance<ViewGroup>()
+            .firstOrNull(::isVisibleInHierarchy)
+            ?: return
+        val existing = keyguardMergedByContainer[container]
+        if (existing != null && existing.host.parent === container) return
+
+        val host = FrameLayout(container.context).apply {
+            clipChildren = false
+            clipToPadding = false
+            isClickable = false
+            isFocusable = false
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            layoutParams = keyguardOverlayLayoutParams(container)
+        }
+        val text = TextView(container.context).apply {
+            gravity = Gravity.END or Gravity.CENTER_VERTICAL
+            includeFontPadding = false
+            maxLines = 1
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.END or Gravity.CENTER_VERTICAL,
+            )
+        }
+        host.addView(text)
+        val merged = KeyguardMergedSignalView(container, host, text)
+        try {
+            container.addView(host, host.layoutParams)
+            keyguardMergedByContainer[container] = merged
+            onEvent("injected keyguard merged status element container=${container.javaClass.name} id=${System.identityHashCode(container)}")
+            renderKeyguardMerged(merged)
+        } catch (t: Throwable) {
+            runCatching { host.removeView(text) }
+            runCatching { container.removeView(host) }
+            throw t
+        }
+    }
+
+    private fun keyguardOverlayLayoutParams(container: ViewGroup): ViewGroup.LayoutParams = when (container) {
+        is FrameLayout -> FrameLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            Gravity.FILL,
+        )
+        is LinearLayout -> LinearLayout.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        )
+        else -> ViewGroup.LayoutParams(
+            ViewGroup.LayoutParams.MATCH_PARENT,
+            ViewGroup.LayoutParams.MATCH_PARENT,
+        )
+    }
+
+    private fun renderKeyguardMerged(view: KeyguardMergedSignalView) {
+        if (!compatibility.mergedSignalDisplay || !config.enabled || config.safeMode || keyguardLocked != true) {
+            view.text.visibility = View.GONE
+            view.host.visibility = View.GONE
+            return
+        }
+        val segments = mergedSegments()
+        if (segments.isEmpty()) {
+            view.text.visibility = View.GONE
+            view.host.visibility = View.GONE
+            return
+        }
+        val rendered = SpannableStringBuilder()
+        segments.forEachIndexed { index, segment ->
+            if (index > 0) rendered.append(" / ")
+            rendered.append(segment)
+        }
+        view.text.text = rendered
+        applyKeyguardMergedStyle(view)
+        view.text.visibility = View.VISIBLE
+        view.host.visibility = View.VISIBLE
+        view.host.alpha = 1f
+    }
+
+    private fun applyKeyguardMergedStyle(view: KeyguardMergedSignalView) {
+        view.text.typeface = Typeface.create("sans-serif-condensed", if (config.bold) Typeface.BOLD else Typeface.NORMAL)
+        view.text.setTextSize(TypedValue.COMPLEX_UNIT_SP, config.fontSizeSp)
+        view.text.setPadding(0, 0, 0, 0)
+        view.text.includeFontPadding = false
+        view.text.maxLines = 1
+        view.text.gravity = Gravity.END or Gravity.CENTER_VERTICAL
+        // The visible lockscreen status-bar appearance callback is the
+        // authoritative source. White is the safe fallback during the first
+        // frame before SystemUI publishes that callback.
+        view.text.setTextColor(statusAppearanceTint ?: Color.WHITE)
+    }
+
+    private fun isVisibleInHierarchy(view: View): Boolean {
+        var current: View? = view
+        repeat(24) {
+            val item = current ?: return true
+            if (item.visibility != View.VISIBLE || item.alpha <= 0f) return false
+            current = item.parent as? View
+        }
+        return true
+    }
+
+    private fun restoreKeyguardMerged(view: KeyguardMergedSignalView) {
+        runCatching { (view.host.parent as? ViewGroup)?.removeView(view.host) }.onFailure(onError)
+    }
+
+    /**
+     * PJZ110's visible lockscreen status bar still draws its native
+     * `system_icons` group. Its battery percentage would therefore be drawn
+     * on top of the merged lockscreen element. Hide that native group while
+     * the replacement is active, then restore its original state after
+     * unlocking.
+     */
+    private fun hideKeyguardNativeSystemIcons(root: ViewGroup) {
+        val candidates = mutableListOf<View>()
+        findNamedViews(root, setOf("system_icons"), candidates)
+        var newlyHidden = 0
+        candidates.forEach { view ->
+            if (keyguardHiddenSystemIcons.putIfAbsent(view, HiddenViewState(view.visibility, view.alpha)) == null) {
+                newlyHidden++
+            }
+            visibilityGuard.set(true)
+            try {
+                if (view.visibility != View.GONE) view.visibility = View.GONE
+            } finally {
+                visibilityGuard.remove()
+            }
+            alphaGuard.set(true)
+            try {
+                if (view.alpha != 0f) view.alpha = 0f
+            } finally {
+                alphaGuard.remove()
+            }
+        }
+        if (newlyHidden > 0) onEvent("hidden keyguard native system icons count=$newlyHidden")
+    }
+
+    private fun restoreKeyguardNativeSystemIcons() {
+        keyguardHiddenSystemIcons.entries.toList().forEach { (view, state) ->
+            visibilityGuard.set(true)
+            try {
+                view.visibility = state.visibility
+            } finally {
+                visibilityGuard.remove()
+            }
+            alphaGuard.set(true)
+            try {
+                view.alpha = state.alpha
+            } finally {
+                alphaGuard.remove()
+            }
+        }
+        keyguardHiddenSystemIcons.clear()
     }
 
     private fun mergedHostVisibility(view: MergedSignalView): Int {
@@ -1282,4 +1472,15 @@ private data class MergedSignalView(
     var requestedVisibility: Int,
     var requestedAlpha: Float,
     var appearanceTint: Int? = null,
+)
+
+private data class KeyguardMergedSignalView(
+    val container: ViewGroup,
+    val host: FrameLayout,
+    val text: TextView,
+)
+
+private data class HiddenViewState(
+    val visibility: Int,
+    val alpha: Float,
 )
