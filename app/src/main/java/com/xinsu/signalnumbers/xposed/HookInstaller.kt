@@ -45,6 +45,7 @@ class HookInstaller(
         installLayoutFallback()
         installComposeMobileFallback()
         installAppearanceMirrors()
+        installMergedBatteryViewHooks()
         installKeyguardAppearanceMirrors()
         installKeyguardStateMirrors()
         installShadeClassLoadMirror()
@@ -183,6 +184,76 @@ class HookInstaller(
         }
     }
 
+    private fun installMergedBatteryViewHooks() = guarded {
+        if (!compatibility.mergedSignalDisplay ||
+            (compatibility.batteryViewClassNames.isEmpty() && compatibility.batteryViewResourceNames.isEmpty())
+        ) return@guarded
+
+        // The visible PJZ110 battery slots are ComposeViews identified by
+        // resource name. Hook their lifecycle so each slot is wrapped as soon
+        // as it is attached. When resource anchors are declared, the legacy
+        // BatteryMeterView is only a hide target, never a merge anchor.
+        XposedBridge.hookAllMethods(ViewGroup::class.java, "onAttachedToWindow", object : XC_MethodHook() {
+            override fun afterHookedMethod(param: MethodHookParam) = guarded {
+                val view = param.thisObject as? ViewGroup ?: return@guarded
+                val resourceName = runCatching {
+                    if (view.id == View.NO_ID) "" else view.resources.getResourceEntryName(view.id)
+                }.getOrDefault("")
+                if (resourceName !in compatibility.batteryViewResourceNames) return@guarded
+                injector.injectBatteryView(view)
+            }
+        })
+        guarded {
+            // Some PJZ110 shade/keyguard battery slots are created after the
+            // initial layout scan. Catch both the base View lifecycle and the
+            // actual parent insertion so a late Compose anchor cannot expose
+            // the native percentage for one frame or bypass the merge.
+            XposedBridge.hookAllMethods(View::class.java, "onAttachedToWindow", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) = guarded {
+                    val view = param.thisObject as? ViewGroup ?: return@guarded
+                    val resourceName = runCatching {
+                        if (view.id == View.NO_ID) "" else view.resources.getResourceEntryName(view.id)
+                    }.getOrDefault("")
+                    if (resourceName in compatibility.batteryViewResourceNames) injector.injectBatteryView(view)
+                }
+            })
+        }
+        guarded {
+            XposedBridge.hookAllMethods(ViewGroup::class.java, "addView", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) = guarded {
+                    val view = param.args.firstOrNull { it is View } as? ViewGroup ?: return@guarded
+                    val resourceName = runCatching {
+                        if (view.id == View.NO_ID) "" else view.resources.getResourceEntryName(view.id)
+                    }.getOrDefault("")
+                    if (resourceName in compatibility.batteryViewResourceNames) injector.injectBatteryView(view)
+                }
+            })
+        }
+
+        compatibility.batteryViewClassNames.forEach { className ->
+            val clazz = XposedHelpers.findClassIfExists(className, classLoader) ?: return@forEach
+            listOf("onConfigurationChanged", "updatePercentText").forEach { method ->
+                guarded {
+                    XposedBridge.hookAllMethods(clazz, method, object : XC_MethodHook() {
+                        override fun afterHookedMethod(param: MethodHookParam) = guarded {
+                            injector.onBatteryViewChanged(param.thisObject as? ViewGroup ?: return@guarded)
+                        }
+                    })
+                }
+            }
+            guarded {
+                XposedBridge.hookAllMethods(clazz, "onDarkChanged", object : XC_MethodHook() {
+                    override fun afterHookedMethod(param: MethodHookParam) = guarded {
+                        val view = param.thisObject as? ViewGroup ?: return@guarded
+                        val tint = param.args.lastOrNull { it is Int } as? Int
+                        injector.onBatteryAppearanceChanged(view, tint)
+                    }
+                })
+            }
+            onEvent("hook-installed", "$className merged battery callbacks")
+        }
+    }
+
     private fun installKeyguardAppearanceMirrors() {
         compatibility.hookPoints
             .filter { it.role == ViewRole.STATUS_ROOT }
@@ -269,6 +340,11 @@ class HookInstaller(
             val hooks = XposedBridge.hookAllMethods(clazz, "dispatchTouchEvent", object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) = guarded {
                     tryInstallShadeExpansionMirrors(loader)
+                    if (compatibility.mergedSignalDisplay) {
+                        val shade = param.thisObject as? ViewGroup ?: return@guarded
+                        val action = Runnable { guarded { injector.scanAndInject(shade) } }
+                        if (Looper.myLooper() == Looper.getMainLooper()) action.run() else main.post(action)
+                    }
                 }
             })
             if (hooks.isNotEmpty()) {

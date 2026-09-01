@@ -46,6 +46,12 @@ interface CompatibilityAdapter {
     val hideExpandedShadeSignalRowOnKeyguard: Boolean get() = false
     /** Whether traditional top-bar mobile views are hidden when a stacked Compose mobile view is active. */
     val hideTraditionalMobileViewsWhenCompose: Boolean get() = false
+    /** Whether all PJZ110 status indicators are rendered by one merged element. */
+    val mergedSignalDisplay: Boolean get() = false
+    /** SystemUI battery view classes used as the anchor for the merged element. */
+    val batteryViewClassNames: Set<String> get() = emptySet()
+    /** SystemUI resource names used by the visible battery compositor anchor. */
+    val batteryViewResourceNames: Set<String> get() = emptySet()
     /** Whether injected signal text is forced white while the regular shade is fully expanded. */
     val forceWhiteInExpandedShade: Boolean get() = true
     /** Whether injected signal text is forced white while the keyguard is showing. */

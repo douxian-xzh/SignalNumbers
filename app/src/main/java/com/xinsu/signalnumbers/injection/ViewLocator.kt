@@ -41,6 +41,26 @@ class ViewLocator(private val compatibility: CompatibilityAdapter) {
         return heuristic.distinctBy { it.image }
     }
 
+    fun locateBatteryViews(
+        root: View,
+        classNames: Set<String>,
+        resourceNames: Set<String> = emptySet(),
+    ): List<ViewGroup> {
+        if (classNames.isEmpty() && resourceNames.isEmpty()) return emptyList()
+        val resourceMatches = mutableListOf<ViewGroup>()
+        val classMatches = mutableListOf<ViewGroup>()
+        walk(root) { view ->
+            if (view !is ViewGroup) return@walk
+            if (resourceName(view) in resourceNames) resourceMatches += view
+            if (view.javaClass.name in classNames) classMatches += view
+        }
+        // PJZ110 keeps the old BatteryMeterView in a zero-sized GONE wrapper
+        // while the visible battery is drawn by one of these Compose anchors.
+        // When resource anchors are declared, never fall back to a legacy class
+        // in an unrelated inflated layout such as a notification section row.
+        return if (resourceNames.isNotEmpty()) resourceMatches.distinct() else classMatches.distinct()
+    }
+
     fun resourceName(view: View): String = runCatching {
         if (view.id == View.NO_ID) "" else view.resources.getResourceEntryName(view.id)
     }.getOrDefault("")

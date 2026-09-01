@@ -15,4 +15,5 @@ data class SignalSnapshot(
     val mobileBySubscription: Map<Int, MobileReading> = emptyMap(),
     val mobileBySlot: Map<Int, MobileReading> = emptyMap(),
     val wifi: WifiReading = WifiReading(),
+    val batteryPercent: Int? = null,
 )

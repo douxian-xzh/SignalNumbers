@@ -12,6 +12,7 @@ import com.xinsu.signalnumbers.compatibility.CompatibilityRegistry
 import com.xinsu.signalnumbers.config.ModuleConfig
 import com.xinsu.signalnumbers.config.RemoteConfigClient
 import com.xinsu.signalnumbers.injection.ViewInjector
+import com.xinsu.signalnumbers.signal.BatteryLevelTracker
 import com.xinsu.signalnumbers.signal.MobileReading
 import com.xinsu.signalnumbers.signal.MobileSignalTracker
 import com.xinsu.signalnumbers.signal.SignalSnapshot
@@ -27,6 +28,7 @@ object RuntimeController {
     private lateinit var injector: ViewInjector
     private lateinit var mobileTracker: MobileSignalTracker
     private lateinit var wifiTracker: WifiSignalTracker
+    private lateinit var batteryTracker: BatteryLevelTracker
     private val main = Handler(Looper.getMainLooper())
     private var snapshot = SignalSnapshot()
     private var safeModeReported = false
@@ -43,6 +45,7 @@ object RuntimeController {
         }, ::reportError)
         mobileTracker = MobileSignalTracker(context, ::onMobileChanged, ::reportError)
         wifiTracker = WifiSignalTracker(context, ::onWifiChanged, ::reportError)
+        batteryTracker = BatteryLevelTracker(context, ::onBatteryChanged, ::reportError)
 
         configClient.start()
         HookInstaller(
@@ -56,6 +59,7 @@ object RuntimeController {
         registerScreenReceiver()
         mobileTracker.start()
         wifiTracker.start()
+        batteryTracker.start()
         logger.info(
             "startup",
             "Started with ${compatibility.name}; mode=${compatibility.mode.id}; ${Build.MANUFACTURER} ${Build.MODEL}, API ${Build.VERSION.SDK_INT}",
@@ -86,6 +90,12 @@ object RuntimeController {
         injector.updateSignals(snapshot)
     }
 
+    private fun onBatteryChanged(percent: Int?) = main.post {
+        logger.info("battery-reading", "percent=$percent", 5_000L)
+        snapshot = snapshot.copy(batteryPercent = percent)
+        injector.updateSignals(snapshot)
+    }
+
     private fun registerScreenReceiver() {
         val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -93,6 +103,7 @@ object RuntimeController {
                     main.post {
                         mobileTracker.refreshAfterScreenOn()
                         wifiTracker.refresh()
+                        batteryTracker.refresh()
                         injector.updateSignals(snapshot)
                     }
                 }

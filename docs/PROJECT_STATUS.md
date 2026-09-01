@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-08-31
+更新：2026-09-01
 
 ## 项目定位
 
@@ -10,7 +10,7 @@ SignalNumbers 是一个面向 Vector/Xposed 的 Android SystemUI 模块，在运
 
 ## 当前状态
 
-- 当前版本：`1.0.39`，versionCode `40`。
+- 当前版本：`1.0.40`，versionCode `41`。
 - Xiaomi/Redmi/POCO + HyperOS 3 / Android 16：已完成当前目标设备的实机验证，可直接安装模块 APK，在 Vector/Xposed 中只勾选“系统界面”。
 - PJZ110 / LineageOS / Android 16：已实现双卡、Compose 状态栏和展开通知栏的适配路径，但仍属于适配阶段；其他系统不保证布局、颜色和 View 结构兼容。
 - 运行时通过 `CompatibilityRegistry` 按厂商、品牌、型号、设备代号、API 和系统构建标识选择 `xiaomi-hyperos3`、`pjz110-lineage` 或 `aosp` 模式。
@@ -21,6 +21,7 @@ SignalNumbers 是一个面向 Vector/Xposed 的 Android SystemUI 模块，在运
 - Xiaomi HyperOS 3 的 5G/4G 标签、数据活动图标避让、浅色/深色、锁屏和控制中心颜色适配。
 - PJZ110 的 LineageOS Compose 双卡显示、展开通知栏重复行处理、桌面/锁屏显示隔离。
 - PJZ110 下方重复信号行采用粘性身份识别，避免 SystemUI 重排或临时重挂载后再次参与顶部布局。
+- PJZ110 使用单元素合并显示：卡 1、卡 2、Wi-Fi（已连接时）和电池百分比由一个 TextView 绘制，原生对应视图统一隐藏；顶部/锁屏与通知栏展开分别接管可见 Compose 电池槽，避免晚创建的第二个槽重新显示原生百分比。
 - 模块 Manifest、Vector/Xposed scope 和设置页均明确标注请求应用为 `com.android.systemui`。
 - 构建使用 Gradle Wrapper，可在无额外 Gradle 安装的 Windows 环境复现。
 

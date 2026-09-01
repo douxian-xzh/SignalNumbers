@@ -57,6 +57,8 @@ English: [README.en.md](README.en.md)
 
 版本 `1.0.37` 增加运行时系统模式隔离：按厂商、品牌、型号、设备代号、Android API 和 HyperOS 构建标识选择 `pjz110-lineage`、`xiaomi-hyperos3` 或通用 `aosp` 模式。PJZ110 专用的 Compose/传统 View 隐藏逻辑再次检查模式标识，即使把新版本误装到小米，也不会启用 PJZ110 规则。
 
+版本 `1.0.40` 为 PJZ110 启用单元素合并显示：以系统电池视图位置作为唯一锚点，将卡 1、卡 2、Wi-Fi 和电池百分比合并到一个 TextView；系统原生蜂窝、Wi-Fi、电池和 Compose/传统重复视图全部隐藏，Wi-Fi 未连接时自动省略 Wi-Fi 项，从结构上避免多 View 重叠。小米适配路径不变。
+
 版本 `1.0.39` 修复 PJZ110 SystemUI 重排导致重复信号行重新显示：下方 `ModernShadeCarrierGroupMobileView` 行首次识别后保留行身份，即使 SystemUI 临时重挂载 View、父级链短暂变化，也继续执行下方重复行的隐藏规则；小米适配路径不变。
 
 版本 `1.0.38` 修复 PJZ110 下拉收起后重复信号行残留：`ModernShadeCarrierGroupMobileView` 下方蜂窝/Wi-Fi 行现在只允许在完全展开通知栏时显示，收起、桌面和锁屏状态统一隐藏；顶部 Compose 双卡数字保持显示，避免重复行再次压到桌面状态栏。

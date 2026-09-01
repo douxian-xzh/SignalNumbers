@@ -11,6 +11,14 @@ class OnePlus13Android16Compatibility : AospCompatibility() {
     override val showExpandedShadeSignalRowOnlyWhenExpanded = true
     override val hideExpandedShadeSignalRowOnKeyguard = true
     override val hideTraditionalMobileViewsWhenCompose = true
+    override val mergedSignalDisplay = true
+    override val batteryViewClassNames = setOf(
+        "com.android.systemui.battery.BatteryMeterView",
+    )
+    override val batteryViewResourceNames = setOf(
+        "battery_composable_view",
+        "battery_meter_composable_view",
+    )
     override val forceWhiteInExpandedShade = false
     override val forceWhiteOnKeyguard = false
     override val appearanceTintSourceClassNames = mapOf(

@@ -1,3 +1,4 @@
 <resources>
     <item name="signal_number_overlay" type="id" />
+    <item name="merged_signal_overlay" type="id" />
 </resources>

@@ -40,6 +40,7 @@ class ViewInjector(
     private val byNetworkType = WeakHashMap<View, InjectedSignalView>()
     private val byMobileActivity = WeakHashMap<View, InjectedSignalView>()
     private val composeMobile = WeakHashMap<ViewGroup, ComposeSignalView>()
+    private val mergedByBattery = WeakHashMap<ViewGroup, MergedSignalView>()
     private val all = mutableListOf<WeakReference<InjectedSignalView>>()
     private var config = ModuleConfig()
     private var snapshot = SignalSnapshot()
@@ -65,6 +66,14 @@ class ViewInjector(
                 onEvent("bound existing mobile id=${System.identityHashCode(candidate.image)} subId=$hintedSubId slot=${existing.slotIndex}")
             }
         }
+        if (compatibility.mergedSignalDisplay) {
+            locator.locateBatteryViews(
+                root,
+                compatibility.batteryViewClassNames,
+                compatibility.batteryViewResourceNames,
+            )
+                .forEach(::injectBatteryView)
+        }
         renderAll()
     }
 
@@ -77,6 +86,102 @@ class ViewInjector(
             else -> return@guarded
         }
         inject(image, role, -1)
+    }
+
+    fun injectBatteryView(view: ViewGroup) = guarded {
+        if (!compatibility.mergedSignalDisplay ||
+            mergedByBattery.containsKey(view) ||
+            !isMergedBatteryAnchor(view)
+        ) return@guarded
+        injectMergedBatteryView(view)
+    }
+
+    fun onBatteryViewChanged(view: ViewGroup) = guarded {
+        val merged = mergedByBattery[view] ?: run {
+            injectBatteryView(view)
+            mergedByBattery[view]
+        } ?: return@guarded
+        applyMergedStyle(merged)
+        renderMerged(merged)
+    }
+
+    fun onBatteryAppearanceChanged(view: ViewGroup, tint: Int?) = guarded {
+        val merged = mergedByBattery[view] ?: run {
+            injectBatteryView(view)
+            mergedByBattery[view]
+        } ?: return@guarded
+        if (tint != null && tint ushr 24 != 0) merged.appearanceTint = tint
+        copyMergedTint(merged)
+        renderMerged(merged)
+    }
+
+    private fun injectMergedBatteryView(original: ViewGroup) {
+        val parent = original.parent as? ViewGroup ?: return
+        if (original.getTag(R.id.merged_signal_overlay) != null) return
+        val index = parent.indexOfChild(original).takeIf { it >= 0 } ?: return
+        val oldParams = original.layoutParams
+        val oldVisibility = original.visibility
+        val oldAlpha = original.alpha
+        val host = FrameLayout(original.context).apply {
+            layoutParams = copyLayoutParams(oldParams, ViewGroup.LayoutParams.WRAP_CONTENT)
+            clipChildren = false
+            clipToPadding = false
+        }
+        val text = TextView(original.context).apply {
+            gravity = Gravity.CENTER
+            includeFontPadding = false
+            maxLines = 1
+            importantForAccessibility = View.IMPORTANT_FOR_ACCESSIBILITY_NO
+            layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.CENTER,
+            )
+        }
+        val merged = MergedSignalView(
+            original = original,
+            host = host,
+            text = text,
+            originalParent = parent,
+            originalIndex = index,
+            originalLayoutParams = oldParams,
+            originalVisibility = oldVisibility,
+            originalAlpha = oldAlpha,
+            requestedVisibility = oldVisibility,
+            requestedAlpha = oldAlpha,
+        )
+        mergedByBattery[original] = merged
+        original.setTag(R.id.merged_signal_overlay, text)
+        var removed = false
+        try {
+            parent.removeViewAt(index)
+            removed = true
+            original.layoutParams = FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                Gravity.CENTER_VERTICAL,
+            )
+            host.addView(original)
+            host.addView(text)
+            parent.addView(host, index)
+            onEvent(
+                "injected merged status element parent=${parent.javaClass.name} " +
+                    "battery=${original.javaClass.name} id=${System.identityHashCode(original)}",
+            )
+            applyMergedStyle(merged)
+            renderMerged(merged)
+        } catch (t: Throwable) {
+            mergedByBattery.remove(original)
+            original.setTag(R.id.merged_signal_overlay, null)
+            runCatching { host.removeView(original) }
+            runCatching { (host.parent as? ViewGroup)?.removeView(host) }
+            if (removed && original.parent == null) {
+                runCatching { parent.addView(original, index.coerceAtMost(parent.childCount), oldParams) }
+            }
+            original.visibility = oldVisibility
+            original.alpha = oldAlpha
+            throw t
+        }
     }
 
     fun injectComposeMobile(root: ViewGroup) = guarded {
@@ -234,6 +339,7 @@ class ViewInjector(
             updated++
         }
         composeMobile.values.toList().forEach(::copyComposeTint)
+        mergedByBattery.values.toList().forEach(::copyMergedTint)
         if (updated > 0) onEvent("keyguard locked=$locked root=${root?.javaClass?.name ?: "all"} tint=${if (locked) "ffffffff" else "original"} forced=${isForcedWhite()} wasForced=$forcedWhiteBefore injected=$updated")
     }
 
@@ -249,6 +355,31 @@ class ViewInjector(
 
     fun onOriginalVisibilityChanged(view: View) = guarded {
         if (visibilityGuard.get() == true) return@guarded
+        val requestedVisibility = view.visibility
+        val group = view as? ViewGroup
+        if (group != null && compatibility.mergedSignalDisplay && !mergedByBattery.containsKey(group)) {
+            // A Compose battery anchor can receive its first visibility update
+            // before the layout fallback has scanned the completed hierarchy.
+            // Try to wrap it before allowing that update to hide the anchor.
+            injectBatteryView(group)
+        }
+        val battery = group?.let(mergedByBattery::get)
+        if (battery != null) {
+            battery.requestedVisibility = requestedVisibility
+            renderMerged(battery)
+            return@guarded
+        }
+        if (compatibility.mergedSignalDisplay && isLegacyBatteryView(view)) {
+            // BatteryMeterView is only the legacy drawing path on PJZ110. Keep
+            // it hidden even when SystemUI later toggles it back on.
+            visibilityGuard.set(true)
+            try {
+                if (view.visibility != View.GONE) view.visibility = View.GONE
+            } finally {
+                visibilityGuard.remove()
+            }
+            return@guarded
+        }
         val signal = (view as? ImageView)?.let(byOriginal::get)
         if (signal != null) {
             render(signal)
@@ -277,6 +408,18 @@ class ViewInjector(
 
     fun onOriginalAlphaChanged(view: View) = guarded {
         if (alphaGuard.get() == true) return@guarded
+        val battery = (view as? ViewGroup)?.let(mergedByBattery::get)
+        if (battery != null) {
+            val requestedAlpha = view.alpha
+            battery.requestedAlpha = requestedAlpha
+            if (requestedAlpha > 0f) battery.text.alpha = requestedAlpha
+            if (view.alpha != 0f) {
+                alphaGuard.set(true)
+                try { view.alpha = 0f } finally { alphaGuard.remove() }
+            }
+            renderMerged(battery)
+            return@guarded
+        }
         val injected = byOriginal[view as? ImageView ?: return@guarded] ?: return@guarded
         val requestedAlpha = view.alpha
         if (requestedAlpha > 0f) injected.text.alpha = requestedAlpha
@@ -287,9 +430,11 @@ class ViewInjector(
     }
 
     fun restoreAll() = guarded {
+        mergedByBattery.values.toList().forEach(::restoreMerged)
         liveViews().forEach(::restore)
         composeMobile.values.toList().forEach(::restoreCompose)
         composeMobile.clear()
+        mergedByBattery.clear()
         byOriginal.clear()
         byNetworkType.clear()
         byMobileActivity.clear()
@@ -375,6 +520,10 @@ class ViewInjector(
             applyComposeStyle(it)
             renderCompose(it)
         }
+        mergedByBattery.values.toList().forEach {
+            applyMergedStyle(it)
+            renderMerged(it)
+        }
     }
 
     private fun updateShadeState(source: String) {
@@ -389,6 +538,7 @@ class ViewInjector(
                 it.text.alpha = it.originalAlpha
             }
             composeMobile.values.toList().forEach(::copyComposeTint)
+            mergedByBattery.values.toList().forEach(::copyMergedTint)
         }
         if (previousExpanded != shadeExpanded || previousForcedWhite != forcedWhite) {
             onEvent(
@@ -426,6 +576,11 @@ class ViewInjector(
     }
 
     private fun renderCompose(view: ComposeSignalView) {
+        if (compatibility.mergedSignalDisplay) {
+            view.compose.alpha = 0f
+            view.text.visibility = View.GONE
+            return
+        }
         if (!config.enabled || config.safeMode || !config.mobileEnabled) return restoreCompose(view)
         if (shouldHideExpandedShadeSignalRow(view.root)) {
             view.compose.alpha = 0f
@@ -484,6 +639,10 @@ class ViewInjector(
 
     private fun render(view: InjectedSignalView) {
         if (!config.enabled || config.safeMode) return restore(view)
+        if (compatibility.mergedSignalDisplay && (view.role == ViewRole.MOBILE || view.role == ViewRole.WIFI)) {
+            hideSignalForMergedDisplay(view)
+            return
+        }
         view.wrapper.visibility = View.VISIBLE
         if ((view.role == ViewRole.MOBILE || view.role == ViewRole.WIFI) &&
             shouldHideExpandedShadeSignalRow(view)
@@ -529,6 +688,162 @@ class ViewInjector(
         hideNetworkType(view)
         copyTint(view)
         onEvent("rendered role=${view.role} text=${view.text.text} subId=${view.subscriptionId} slot=${view.slotIndex} originalVisibility=${view.original.visibility} shown=${view.wrapper.isShown} id=${System.identityHashCode(view.original)}")
+    }
+
+    private fun hideSignalForMergedDisplay(view: InjectedSignalView) {
+        view.original.alpha = 0f
+        view.text.visibility = View.GONE
+        view.wrapper.visibility = View.GONE
+        hideNetworkType(view)
+        onEvent("hidden native signal for merged display role=${view.role} slot=${view.slotIndex} id=${System.identityHashCode(view.original)}")
+    }
+
+    private fun renderMerged(view: MergedSignalView) {
+        if (!compatibility.mergedSignalDisplay || !config.enabled || config.safeMode) return
+        hideMergedOriginal(view)
+        val segments = mergedSegments()
+        if (segments.isEmpty()) {
+            view.text.visibility = View.GONE
+            view.host.visibility = View.GONE
+            return
+        }
+        val rendered = SpannableStringBuilder()
+        segments.forEachIndexed { index, segment ->
+            if (index > 0) rendered.append(" / ")
+            rendered.append(segment)
+        }
+        view.text.text = rendered
+        fitMergedWidth(view)
+        view.text.visibility = View.VISIBLE
+        view.host.visibility = mergedHostVisibility(view)
+        view.host.alpha = view.requestedAlpha
+        copyMergedTint(view)
+        onEvent("rendered merged status text=${view.text.text} visibility=${view.host.visibility} anchor=${locator.resourceName(view.original)}")
+    }
+
+    private fun mergedHostVisibility(view: MergedSignalView): Int {
+        if (view.requestedVisibility == View.VISIBLE) return View.VISIBLE
+        // The legacy BatteryMeterView is declared GONE in PJZ110's layout even
+        // though its parent is the slot that should carry the replacement. If
+        // it is selected as a fallback (no Compose battery anchor exists), the
+        // merged element must still be visible while its parent participates in
+        // layout. Parent visibility continues to gate the result.
+        if (isLegacyBatteryView(view.original) && view.originalParent.visibility == View.VISIBLE) {
+            return View.VISIBLE
+        }
+        return view.requestedVisibility
+    }
+
+    private fun isMergedBatteryAnchor(view: ViewGroup): Boolean {
+        val resourceName = locator.resourceName(view)
+        if (resourceName in compatibility.batteryViewResourceNames) return true
+        if (compatibility.batteryViewResourceNames.isNotEmpty()) return false
+        if (view.javaClass.name !in compatibility.batteryViewClassNames) return false
+        return true
+    }
+
+    private fun isLegacyBatteryView(view: View): Boolean =
+        view.javaClass.name in compatibility.batteryViewClassNames
+
+    private fun mergedSegments(): List<CharSequence> {
+        val segments = mutableListOf<CharSequence>()
+        if (config.mobileEnabled) {
+            snapshot.mobileBySlot.values
+                .filter { it.slotIndex >= 0 && isComposeSlotEnabled(it) }
+                .distinctBy { it.slotIndex }
+                .sortedBy { it.slotIndex }
+                .forEach { reading ->
+                    composeReadingValue(reading)?.let { value ->
+                        segments += format(value, mobileRadioLabel(reading.radioFamily))
+                    }
+                }
+        }
+        val wifiRssi = snapshot.wifi.rssi
+        if (config.wifiEnabled && snapshot.wifi.connected && wifiRssi != null) {
+            segments += format(number(wifiRssi), "WiFi")
+        }
+        snapshot.batteryPercent?.let { percent -> segments += "$percent%" }
+        return segments
+    }
+
+    private fun hideMergedOriginal(view: MergedSignalView) {
+        visibilityGuard.set(true)
+        try {
+            if (view.original.visibility != View.GONE) view.original.visibility = View.GONE
+        } finally {
+            visibilityGuard.remove()
+        }
+        alphaGuard.set(true)
+        try {
+            if (view.original.alpha != 0f) view.original.alpha = 0f
+        } finally {
+            alphaGuard.remove()
+        }
+    }
+
+    private fun applyMergedStyle(view: MergedSignalView) {
+        view.text.typeface = Typeface.create("sans-serif-condensed", if (config.bold) Typeface.BOLD else Typeface.NORMAL)
+        view.text.setTextSize(TypedValue.COMPLEX_UNIT_SP, config.fontSizeSp)
+        view.text.setPadding(0, 0, 0, 0)
+        view.text.includeFontPadding = false
+        view.text.maxLines = 1
+        copyMergedTint(view)
+    }
+
+    private fun fitMergedWidth(view: MergedSignalView) {
+        val width = max(dp(view.host, 1), ceil(Layout.getDesiredWidth(view.text.text, view.text.paint).toDouble()).toInt() + dp(view.host, 3))
+        val hostParams = view.host.layoutParams
+        if (hostParams.width != width) {
+            hostParams.width = width
+            view.host.layoutParams = hostParams
+        }
+        view.host.minimumWidth = width
+        val textParams = (view.text.layoutParams as? FrameLayout.LayoutParams)
+            ?: FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        textParams.width = ViewGroup.LayoutParams.MATCH_PARENT
+        textParams.height = ViewGroup.LayoutParams.MATCH_PARENT
+        textParams.gravity = Gravity.CENTER
+        textParams.leftMargin = 0
+        textParams.rightMargin = 0
+        view.text.layoutParams = textParams
+    }
+
+    private fun copyMergedTint(view: MergedSignalView) {
+        val percentView = findBatteryPercentView(view.original)
+        val childTint = percentView?.currentTextColor?.takeIf { it ushr 24 != 0 }
+        val tint = if (isForcedWhite()) {
+            Color.WHITE
+        } else {
+            view.appearanceTint ?: childTint ?: mobileAppearanceTint ?: wifiAppearanceTint
+        }
+        if (tint != null) {
+            view.text.setTextColor(tint)
+        } else {
+            val value = TypedValue()
+            if (view.original.context.theme.resolveAttribute(android.R.attr.textColorPrimary, value, true)) {
+                val color = if (value.resourceId != 0) {
+                    runCatching { view.original.context.getColorStateList(value.resourceId) }.getOrNull()
+                } else {
+                    ColorStateList.valueOf(value.data)
+                }
+                if (color != null) view.text.setTextColor(color)
+            }
+        }
+        view.text.alpha = 1f
+    }
+
+    private fun findBatteryPercentView(group: ViewGroup): TextView? {
+        val method = runCatching {
+            group.javaClass.methods.firstOrNull { it.name == "getBatteryPercentView" && it.parameterTypes.isEmpty() }
+        }.getOrNull()
+        val result = runCatching { method?.invoke(group) as? TextView }.getOrNull()
+        if (result != null) return result
+        for (index in 0 until group.childCount) {
+            val child = group.getChildAt(index)
+            if (child is TextView && locator.resourceName(child) == "battery_percentage_view") return child
+            if (child is ViewGroup) findBatteryPercentView(child)?.let { return it }
+        }
+        return null
     }
 
     private fun mobileText(view: InjectedSignalView): String? {
@@ -750,6 +1065,30 @@ class ViewInjector(
         return false
     }
 
+    private fun restoreMerged(view: MergedSignalView) {
+        val parent = view.host.parent as? ViewGroup ?: return
+        val index = parent.indexOfChild(view.host).takeIf { it >= 0 } ?: view.originalIndex
+        runCatching {
+            visibilityGuard.set(true)
+            try {
+                view.host.removeView(view.original)
+                parent.removeView(view.host)
+                view.original.layoutParams = view.originalLayoutParams
+                view.original.visibility = view.requestedVisibility
+            } finally {
+                visibilityGuard.remove()
+            }
+            alphaGuard.set(true)
+            try {
+                view.original.alpha = view.requestedAlpha
+            } finally {
+                alphaGuard.remove()
+            }
+            view.original.setTag(R.id.merged_signal_overlay, null)
+            parent.addView(view.original, index.coerceAtMost(parent.childCount), view.originalLayoutParams)
+        }.onFailure(onError)
+    }
+
     private fun restore(view: InjectedSignalView) {
         val parent = view.wrapper.parent as? ViewGroup ?: return
         val index = parent.indexOfChild(view.wrapper).takeIf { it >= 0 } ?: view.originalIndex
@@ -868,5 +1207,19 @@ private data class ComposeSignalView(
     val compose: View,
     val text: TextView,
     val originalAlpha: Float,
+    var appearanceTint: Int? = null,
+)
+
+private data class MergedSignalView(
+    val original: ViewGroup,
+    val host: FrameLayout,
+    val text: TextView,
+    val originalParent: ViewGroup,
+    val originalIndex: Int,
+    val originalLayoutParams: ViewGroup.LayoutParams,
+    val originalVisibility: Int,
+    val originalAlpha: Float,
+    var requestedVisibility: Int,
+    var requestedAlpha: Float,
     var appearanceTint: Int? = null,
 )
