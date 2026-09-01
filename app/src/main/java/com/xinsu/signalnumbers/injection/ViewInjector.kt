@@ -236,6 +236,13 @@ class ViewInjector(
             // tint here leaks a shade color into the desktop and lockscreen.
             entry.appearanceTint = tint
         }
+        if (compatibility.mergedSignalDisplay) {
+            // PJZ110 renders all values in the battery-anchored merged element.
+            // SystemUI can call the Compose appearance callback after a normal
+            // render and otherwise expose the original mobile icons again.
+            hideComposeForMergedDisplay(entry)
+            return@guarded
+        }
         copyComposeTint(entry)
         if (shouldHideExpandedShadeSignalRow(entry.root)) {
             entry.compose.alpha = 0f
@@ -377,6 +384,13 @@ class ViewInjector(
 
     fun onOriginalVisibilityChanged(view: View) = guarded {
         if (visibilityGuard.get() == true) return@guarded
+        val compose = composeMobile.values.firstOrNull { it.compose === view }
+        if (compose != null && compatibility.mergedSignalDisplay) {
+            // The original Compose child is only a source view in merged mode.
+            // Keep it hidden when SystemUI rebuilds or rebinds the status icon.
+            hideComposeForMergedDisplay(compose)
+            return@guarded
+        }
         val requestedVisibility = view.visibility
         val group = view as? ViewGroup
         if (group != null && compatibility.mergedSignalDisplay && !mergedByBattery.containsKey(group)) {
@@ -430,6 +444,13 @@ class ViewInjector(
 
     fun onOriginalAlphaChanged(view: View) = guarded {
         if (alphaGuard.get() == true) return@guarded
+        val compose = composeMobile.values.firstOrNull { it.compose === view }
+        if (compose != null && compatibility.mergedSignalDisplay) {
+            // setAlpha(1f) is a common late update from the Compose binding.
+            // Do not let that update bring the duplicate native layer back.
+            hideComposeForMergedDisplay(compose)
+            return@guarded
+        }
         val battery = (view as? ViewGroup)?.let(mergedByBattery::get)
         if (battery != null) {
             val requestedAlpha = view.alpha
@@ -599,8 +620,7 @@ class ViewInjector(
 
     private fun renderCompose(view: ComposeSignalView) {
         if (compatibility.mergedSignalDisplay) {
-            view.compose.alpha = 0f
-            view.text.visibility = View.GONE
+            hideComposeForMergedDisplay(view)
             return
         }
         if (!config.enabled || config.safeMode || !config.mobileEnabled) return restoreCompose(view)
@@ -630,6 +650,21 @@ class ViewInjector(
         view.text.visibility = if (view.root.visibility == View.VISIBLE) View.VISIBLE else View.GONE
         view.compose.alpha = 0f
         onEvent("rendered compose mobile text=${view.text.text} slots=${readings.map { it.first.slotIndex }}")
+    }
+
+    private fun hideComposeForMergedDisplay(view: ComposeSignalView) {
+        visibilityGuard.set(true)
+        try {
+            if (view.text.visibility != View.GONE) view.text.visibility = View.GONE
+        } finally {
+            visibilityGuard.remove()
+        }
+        alphaGuard.set(true)
+        try {
+            if (view.compose.alpha != 0f) view.compose.alpha = 0f
+        } finally {
+            alphaGuard.remove()
+        }
     }
 
     private fun isComposeSlotEnabled(reading: MobileReading): Boolean =
