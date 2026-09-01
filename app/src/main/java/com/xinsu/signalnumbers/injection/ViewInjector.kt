@@ -53,10 +53,14 @@ class ViewInjector(
     private var controlCenterFullyExpanded = false
     private var controlCenterVisible = false
     private var shadeExpanded = false
+    /** Whether a fully expanded shade surface is visible, including over keyguard. */
+    private var shadeAppearanceExpanded = false
     private var mobileAppearanceTint: Int? = null
     private var wifiAppearanceTint: Int? = null
     private var statusAppearanceTint: Int? = null
     private var shadeAppearanceTint: Int? = null
+    private var shadeMobileAppearanceTint: Int? = null
+    private var shadeWifiAppearanceTint: Int? = null
 
     fun scanAndInject(root: View, forcedRole: ViewRole? = null, hintedSubId: Int = -1) = guarded {
         locator.locate(root, forcedRole).forEach { candidate ->
@@ -269,8 +273,21 @@ class ViewInjector(
             else -> Unit
         }
         if (tint != null && tint ushr 24 != 0) {
-            val expandedSource = isExpandedShadeSignal(root)
-            if (expandedSource) shadeAppearanceTint = tint else statusAppearanceTint = tint
+            // PJZ110 reuses the same signal View instances in the top bar and
+            // the fully expanded shade. Once the shade is open, its current
+            // appearance callback belongs to the expanded surface even when
+            // the view has no shade-specific ancestor of its own.
+            val expandedSource = isExpandedShadeSignal(root) || shadeAppearanceExpanded
+            if (expandedSource) {
+                shadeAppearanceTint = tint
+                when (appearanceSourceRole) {
+                    ViewRole.MOBILE -> shadeMobileAppearanceTint = tint
+                    ViewRole.WIFI -> shadeWifiAppearanceTint = tint
+                    else -> Unit
+                }
+            } else {
+                statusAppearanceTint = tint
+            }
             var updated = 0
             liveViews().forEach { view ->
                 if (!isDescendant(view.wrapper, root)) return@forEach
@@ -338,6 +355,13 @@ class ViewInjector(
         val manager = root.context.getSystemService(KeyguardManager::class.java)
         onKeyguardStateChanged(manager?.isKeyguardLocked == true, root)
         if (keyguardLocked == true) hideKeyguardNativeSystemIcons(root)
+        if (compatibility.mergedSignalDisplay && shadeAppearanceExpanded) {
+            // PJZ110 creates a different Compose battery slot for the fully
+            // expanded shade. Its slot can appear after the initial layout
+            // scan, so discover and wrap the visible anchor immediately
+            // before the shade window draws it.
+            ensureMergedBatteryViews(root)
+        }
     }
 
     fun onKeyguardStateChanged(locked: Boolean) = guarded {
@@ -365,6 +389,10 @@ class ViewInjector(
             controlCenterFullyExpanded = false
             controlCenterVisible = false
             shadeExpanded = false
+            shadeAppearanceExpanded = false
+            shadeAppearanceTint = null
+            shadeMobileAppearanceTint = null
+            shadeWifiAppearanceTint = null
         }
 
         if (locked && root != null) ensureKeyguardMergedView(root)
@@ -590,25 +618,64 @@ class ViewInjector(
         keyguardMergedByContainer.values.toList().forEach(::renderKeyguardMerged)
     }
 
+    private fun ensureMergedBatteryViews(root: ViewGroup) {
+        if (mergedByBattery.values.any { view ->
+                view.host.parent != null &&
+                    isDescendant(view.host, root) &&
+                    isVisibleInHierarchy(view.host)
+            }) return
+        locator.locateBatteryViews(
+            root,
+            compatibility.batteryViewClassNames,
+            compatibility.batteryViewResourceNames,
+        ).forEach(::injectBatteryView)
+    }
+
     private fun updateShadeState(source: String) {
         val previousExpanded = shadeExpanded
+        val previousAppearanceExpanded = shadeAppearanceExpanded
         val previousForcedWhite = isForcedWhite()
         shadeExpanded = (shadePanelFullyExpanded || controlCenterFullyExpanded) && keyguardLocked != true
+        shadeAppearanceExpanded = shadePanelFullyExpanded || controlCenterFullyExpanded
+        if (!previousAppearanceExpanded && shadeAppearanceExpanded) {
+            // Start a new shade appearance sample on every expansion. The
+            // previous shade may have used the opposite light/dark palette.
+            shadeAppearanceTint = null
+            shadeMobileAppearanceTint = null
+            shadeWifiAppearanceTint = null
+        }
+        if (shadeAppearanceExpanded && shadeAppearanceTint == null) {
+            // The expansion callback can arrive before the first shade tint
+            // callback. Use the current signal tint as the initial value so a
+            // stale top-bar tint cannot remain on the merged element.
+            shadeAppearanceTint = mobileAppearanceTint ?: wifiAppearanceTint
+        }
         val forcedWhite = isForcedWhite()
+        // A locked expanded shade can reuse a battery anchor whose parent is
+        // temporarily hidden. Do not recalculate host visibility merely
+        // because its tint surface changed; update colors below instead.
         if (previousExpanded != shadeExpanded) renderAll()
-        if (previousExpanded != shadeExpanded || previousForcedWhite != forcedWhite) {
+        if (previousExpanded != shadeExpanded ||
+            previousAppearanceExpanded != shadeAppearanceExpanded ||
+            previousForcedWhite != forcedWhite
+        ) {
             liveViews().forEach {
                 copyTint(it)
                 it.text.alpha = it.originalAlpha
             }
             composeMobile.values.toList().forEach(::copyComposeTint)
             mergedByBattery.values.toList().forEach(::copyMergedTint)
+            keyguardMergedByContainer.values.toList().forEach(::copyKeyguardMergedTint)
         }
-        if (previousExpanded != shadeExpanded || previousForcedWhite != forcedWhite) {
+        if (previousExpanded != shadeExpanded ||
+            previousAppearanceExpanded != shadeAppearanceExpanded ||
+            previousForcedWhite != forcedWhite
+        ) {
             onEvent(
                 "shade expanded=$shadeExpanded source=$source " +
                     "panel=$shadePanelFullyExpanded controlFull=$controlCenterFullyExpanded " +
-                    "controlVisible=$controlCenterVisible tint=${if (forcedWhite) "ffffffff" else "appearance"}",
+                    "controlVisible=$controlCenterVisible appearanceExpanded=$shadeAppearanceExpanded " +
+                    "tint=${if (forcedWhite) "ffffffff" else "appearance"}",
             )
         }
     }
@@ -890,6 +957,9 @@ class ViewInjector(
         view.text.visibility = View.VISIBLE
         view.host.visibility = View.VISIBLE
         view.host.alpha = 1f
+        // SystemUI can append its native battery child after the shade starts
+        // opening. Keep the replacement above that child on every refresh.
+        view.host.bringToFront()
     }
 
     private fun applyKeyguardMergedStyle(view: KeyguardMergedSignalView) {
@@ -900,9 +970,20 @@ class ViewInjector(
         view.text.maxLines = 1
         view.text.gravity = Gravity.END or Gravity.CENTER_VERTICAL
         // The visible lockscreen status-bar appearance callback is the
-        // authoritative source. White is the safe fallback during the first
-        // frame before SystemUI publishes that callback.
-        view.text.setTextColor(statusAppearanceTint ?: Color.WHITE)
+        // authoritative source. While the shade is expanded over keyguard,
+        // use its appearance tint instead of the lockscreen-only tint.
+        val tint = if (isForcedWhite()) {
+            Color.WHITE
+        } else if (isExpandedShadeTintAppearance()) {
+            expandedShadeTint() ?: statusAppearanceTint
+        } else {
+            statusAppearanceTint
+        }
+        view.text.setTextColor(tint ?: Color.WHITE)
+    }
+
+    private fun copyKeyguardMergedTint(view: KeyguardMergedSignalView) {
+        applyKeyguardMergedStyle(view)
     }
 
     private fun isVisibleInHierarchy(view: View): Boolean {
@@ -1063,6 +1144,14 @@ class ViewInjector(
         val regionTint = if (isExpandedShadeSignal(view.original)) shadeAppearanceTint else statusAppearanceTint
         val tint = if (isForcedWhite()) {
             Color.WHITE
+        } else if (isExpandedShadeTintAppearance()) {
+            // The merged battery anchors can be shared by multiple surfaces,
+            // so their cached appearanceTint may still be the collapsed
+            // status-bar color. The expanded shade's tint must win while it
+            // is visible, with the live mobile/Wi-Fi tint as the first-frame
+            // fallback.
+            expandedShadeTint() ?:
+                view.appearanceTint ?: childTint ?: statusAppearanceTint
         } else {
             view.appearanceTint ?: childTint ?: regionTint ?: mobileAppearanceTint ?: wifiAppearanceTint
         }
@@ -1260,6 +1349,11 @@ class ViewInjector(
     }
 
     private fun isExpandedShadeAppearance(): Boolean = shadeExpanded && keyguardLocked != true
+
+    private fun isExpandedShadeTintAppearance(): Boolean = shadeAppearanceExpanded
+
+    private fun expandedShadeTint(): Int? =
+        shadeMobileAppearanceTint ?: mobileAppearanceTint ?: shadeAppearanceTint ?: shadeWifiAppearanceTint ?: wifiAppearanceTint
 
     private fun expandedShadeFallbackTint(view: InjectedSignalView): Int? =
         if (isExpandedShadeAppearance() && isExpandedShadeSignal(view)) {
