@@ -16,11 +16,24 @@ class SystemUiModule : IXposedHookLoadPackage {
                 override fun afterHookedMethod(param: MethodHookParam) {
                     val context = param.args.firstOrNull() as? Context ?: return
                     if (started.compareAndSet(false, true)) {
-                        runCatching { RuntimeController.start(context, lpparam.classLoader) }
-                            .onFailure {
-                                started.set(false)
-                                XposedBridge.log("SignalNumbers: bootstrap failed: ${it.stackTraceToString()}")
-                            }
+                        // Application.attach is on SystemUI's main thread.
+                        // Only hand off the bootstrap here; provider access,
+                        // reflection and all runtime setup happen off-main.
+                        runCatching {
+                            Thread {
+                                runCatching { RuntimeController.start(context, lpparam.classLoader) }
+                                    .onFailure {
+                                        started.set(false)
+                                        XposedBridge.log("SignalNumbers: bootstrap failed: ${it.stackTraceToString()}")
+                                    }
+                            }.apply {
+                                name = "SignalNumbers-Bootstrap"
+                                isDaemon = true
+                            }.start()
+                        }.onFailure {
+                            started.set(false)
+                            XposedBridge.log("SignalNumbers: bootstrap thread failed: ${it.stackTraceToString()}")
+                        }
                     }
                 }
             })

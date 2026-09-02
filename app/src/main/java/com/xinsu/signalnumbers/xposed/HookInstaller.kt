@@ -6,6 +6,7 @@ import android.widget.ImageView
 import android.view.ViewGroup
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import com.xinsu.signalnumbers.compatibility.CompatibilityAdapter
 import com.xinsu.signalnumbers.compatibility.HookPoint
 import com.xinsu.signalnumbers.compatibility.ViewRole
@@ -14,6 +15,9 @@ import com.xinsu.signalnumbers.injection.ViewInjector
 import de.robv.android.xposed.XC_MethodHook
 import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
+import java.util.Collections
+import java.util.WeakHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 
 class HookInstaller(
     private val classLoader: ClassLoader,
@@ -22,8 +26,35 @@ class HookInstaller(
     private val onSystemUiWifiRssi: (Int) -> Unit,
     private val onEvent: (String, String) -> Unit,
     private val onError: (Throwable) -> Unit,
+    private val isHookEnabled: () -> Boolean,
+    private val worker: Handler,
 ) {
     private val main = Handler(Looper.getMainLooper())
+    private val installed = AtomicBoolean(false)
+    private val shadeExpansionInstallQueued = AtomicBoolean(false)
+    private val shadeStateManagerInstallQueued = AtomicBoolean(false)
+    private val quickSettingsInstallQueued = AtomicBoolean(false)
+    private val controlCenterInstallQueued = AtomicBoolean(false)
+    private val shadeViewInstallQueued = AtomicBoolean(false)
+    private val pendingScans = WeakHashMap<View, PendingScan>()
+    private val pendingWorkerObjects = Collections.newSetFromMap(WeakHashMap<Any, Boolean>())
+    private val pendingComposeInjections = weakViewSet()
+    private val pendingImageInjections = weakViewSet()
+    private val pendingAppearanceUpdates = weakViewSet()
+    private val pendingAlphaUpdates = weakViewSet()
+    private val pendingVisibilityUpdates = weakViewSet()
+    private val pendingTintUpdates = weakViewSet()
+    private val pendingBatteryInjections = weakViewSet()
+    private val pendingBatteryUpdates = weakViewSet()
+    private val pendingStatusRootDraws = weakViewSet()
+    private val statusRootPostTimes = WeakHashMap<View, Long>()
+    private val keyguardStateQueued = AtomicBoolean(false)
+    @Volatile
+    private var pendingKeyguardState = false
+    private val shadeExpansionUpdate = LatestUiUpdate(false, main, isHookEnabled, injector::onShadeExpansionChanged, onError)
+    private val shadeQsExpansionUpdate = LatestUiUpdate(false, main, isHookEnabled, injector::onShadeQsExpandedChanged, onError)
+    private val controlCenterFractionUpdate = LatestUiUpdate(0f, main, isHookEnabled, injector::onControlCenterFractionChanged, onError)
+    private val controlCenterVisibilityUpdate = LatestUiUpdate(false, main, isHookEnabled, injector::onControlCenterVisibilityChanged, onError)
     @Volatile
     private var shadeExpansionMirrorsInstalled = false
     @Volatile
@@ -44,20 +75,23 @@ class HookInstaller(
     private val controlCenterClassName = "com.miui.systemui.controlcenter.container.ControlCenterExpandControllerDelegate"
 
     fun install() {
-        compatibility.hookPoints.distinct().forEach(::installPoint)
-        compatibility.wifiStateHookPoints.distinct().forEach(::installWifiStatePoint)
-        installLayoutFallback()
-        installComposeMobileFallback()
-        installAppearanceMirrors()
-        installMergedBatteryViewHooks()
-        installKeyguardAppearanceMirrors()
-        installKeyguardStateMirrors()
-        installShadeClassLoadMirror()
-        installShadeViewMirror()
-        installShadeExpansionMirrors()
-        installShadeStateManagerMirror()
-        installQuickSettingsExpansionMirror()
-        installControlCenterExpansionMirrors()
+        if (!isHookEnabled() || !installed.compareAndSet(false, true)) return
+        runCatching {
+            compatibility.hookPoints.distinct().forEach(::installPoint)
+            compatibility.wifiStateHookPoints.distinct().forEach(::installWifiStatePoint)
+            installLayoutFallback()
+            installComposeMobileFallback()
+            installAppearanceMirrors()
+            installMergedBatteryViewHooks()
+            installKeyguardAppearanceMirrors()
+            installKeyguardStateMirrors()
+            installShadeClassLoadMirror()
+            installShadeViewMirror()
+            installShadeExpansionMirrors()
+            installShadeStateManagerMirror()
+            installQuickSettingsExpansionMirror()
+            installControlCenterExpansionMirrors()
+        }.onFailure(onError)
     }
 
     private fun installComposeMobileFallback() {
@@ -67,9 +101,10 @@ class HookInstaller(
                 val hooks = XposedBridge.hookAllMethods(clazz, method, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) = guarded {
                         val root = param.getResult() as? ViewGroup ?: return@guarded
-                        onEvent("compose-mobile", "$className#$method root=${root.javaClass.name}")
-                        val action = Runnable { guarded { injector.injectComposeMobile(root) } }
-                        if (Looper.myLooper() == Looper.getMainLooper()) action.run() else main.post(action)
+                        postMainOnce(root, pendingComposeInjections) {
+                            onEvent("compose-mobile", "$className#$method root=${root.javaClass.name}")
+                            injector.injectComposeMobile(root)
+                        }
                     }
                 })
                 if (hooks.isNotEmpty()) onEvent("hook-installed", "$className#$method count=${hooks.size}")
@@ -83,13 +118,16 @@ class HookInstaller(
             guarded {
                 XposedBridge.hookAllMethods(clazz, method, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) = guarded {
-                        val state = point.stateFields.firstNotNullOfOrNull { field ->
-                            runCatching { XposedHelpers.getObjectField(param.thisObject, field) }.getOrNull()
-                        } ?: return@guarded
-                        val rssi = point.rssiFields.firstNotNullOfOrNull { field ->
-                            runCatching { XposedHelpers.getIntField(state, field) }.getOrNull()
-                        } ?: return@guarded
-                        if (rssi in -126..-1) onSystemUiWifiRssi(rssi)
+                        val target = param.thisObject ?: return@guarded
+                        postWorkerOnce(target) {
+                            val state = point.stateFields.firstNotNullOfOrNull { field ->
+                                runCatching { XposedHelpers.getObjectField(target, field) }.getOrNull()
+                            } ?: return@postWorkerOnce
+                            val rssi = point.rssiFields.firstNotNullOfOrNull { field ->
+                                runCatching { XposedHelpers.getIntField(state, field) }.getOrNull()
+                            } ?: return@postWorkerOnce
+                            if (rssi in -126..-1) onSystemUiWifiRssi(rssi)
+                        }
                     }
                 })
             }
@@ -102,12 +140,16 @@ class HookInstaller(
             guarded {
                 val hooks = XposedBridge.hookAllMethods(clazz, method, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) = guarded {
-                        val root = findView(param) ?: return@guarded
-                        tryInstallShadeExpansionMirrors(root.javaClass.classLoader ?: classLoader)
-                        tryInstallControlCenterExpansionMirrors(root.javaClass.classLoader ?: classLoader)
-                        val subId = readIntField(param.getResult() ?: param.thisObject, point.subscriptionFields)
-                        onEvent("hook-callback", "${point.className}#$method root=${root.javaClass.name} subId=$subId thread=${Thread.currentThread().name}")
-                        dispatchScan(root, point.role.takeUnless { it == ViewRole.STATUS_ROOT }, subId)
+                        val result = param.getResult()
+                        val target = param.thisObject
+                        val args = param.args.copyOf()
+                        val workKey = target ?: result ?: return@guarded
+                        postWorkerOnce(workKey) {
+                            val root = findView(result, args, target) ?: return@postWorkerOnce
+                            val subId = readIntField(result ?: target, point.subscriptionFields)
+                            onEvent("hook-callback", "${point.className}#$method root=${root.javaClass.name} subId=$subId thread=${Thread.currentThread().name}")
+                            dispatchScan(root, point.role.takeUnless { it == ViewRole.STATUS_ROOT }, subId)
+                        }
                     }
                 })
                 if (hooks.isNotEmpty()) onEvent("hook-installed", "${point.className}#$method count=${hooks.size}")
@@ -120,10 +162,12 @@ class HookInstaller(
             override fun afterHookedMethod(param: MethodHookParam) = guarded {
                 val root = param.getResult() as? View ?: return@guarded
                 val resourceId = param.args.firstOrNull() as? Int ?: return@guarded
-                val name = runCatching { root.resources.getResourceEntryName(resourceId) }.getOrDefault("")
-                if (compatibility.isLikelyStatusResource(name)) {
-                    onEvent("layout-fallback", "$name root=${root.javaClass.name} thread=${Thread.currentThread().name}")
-                    dispatchScan(root, null, -1)
+                postWorkerOnce(root) {
+                    val name = runCatching { root.resources.getResourceEntryName(resourceId) }.getOrDefault("")
+                    if (compatibility.isLikelyStatusResource(name)) {
+                        onEvent("layout-fallback", "$name root=${root.javaClass.name} thread=${Thread.currentThread().name}")
+                        dispatchScan(root, null, -1)
+                    }
                 }
             }
         })
@@ -132,9 +176,8 @@ class HookInstaller(
     private fun dispatchScan(root: View, role: ViewRole?, subId: Int) {
         tryInstallShadeExpansionMirrors(root.javaClass.classLoader ?: classLoader)
         tryInstallControlCenterExpansionMirrors(root.javaClass.classLoader ?: classLoader)
-        findShadeView(root)?.let { installShadeViewMirrors(it.javaClass.classLoader ?: classLoader) }
-        val action = Runnable { guarded { injector.scanAndInject(root, role, subId) } }
-        if (Looper.myLooper() == Looper.getMainLooper()) action.run() else main.post(action)
+        findShadeView(root)?.let { requestShadeViewMirrors(it.javaClass.classLoader ?: classLoader) }
+        postScan(root, role, subId)
     }
 
     private fun installAppearanceMirrors() {
@@ -142,24 +185,31 @@ class HookInstaller(
             XposedBridge.hookAllMethods(ImageView::class.java, "onAttachedToWindow", object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) = guarded {
                     val image = param.thisObject as? ImageView ?: return@guarded
-                    tryInstallShadeExpansionMirrors(image.rootView.javaClass.classLoader ?: classLoader)
-                    tryInstallControlCenterExpansionMirrors(image.rootView.javaClass.classLoader ?: classLoader)
-                    val action = Runnable { guarded { injector.injectKnownImage(image) } }
-                    if (Looper.myLooper() == Looper.getMainLooper()) action.run() else main.post(action)
+                    tryInstallShadeExpansionMirrors(image.javaClass.classLoader ?: classLoader)
+                    tryInstallControlCenterExpansionMirrors(image.javaClass.classLoader ?: classLoader)
+                    postMainOnce(image, pendingImageInjections) {
+                        injector.injectKnownImage(image)
+                    }
                 }
             })
         }
         guarded {
             XposedBridge.hookAllMethods(View::class.java, "setVisibility", object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) = guarded {
-                    injector.onOriginalVisibilityChanged(param.thisObject as? View ?: return@guarded)
+                    val view = param.thisObject as? View ?: return@guarded
+                    postMainOnce(view, pendingVisibilityUpdates) {
+                        injector.onOriginalVisibilityChanged(view)
+                    }
                 }
             })
         }
         guarded {
             XposedBridge.hookAllMethods(View::class.java, "setAlpha", object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) = guarded {
-                    injector.onOriginalAlphaChanged(param.thisObject as? View ?: return@guarded)
+                    val view = param.thisObject as? View ?: return@guarded
+                    postMainOnce(view, pendingAlphaUpdates) {
+                        injector.onOriginalAlphaChanged(view)
+                    }
                 }
             })
         }
@@ -174,7 +224,9 @@ class HookInstaller(
                         override fun afterHookedMethod(param: MethodHookParam) = guarded {
                             val view = param.thisObject as? ViewGroup ?: return@guarded
                             val tint = param.args.firstOrNull { it is Int } as? Int
-                            injector.onAppearanceChanged(view, tint)
+                            postMainOnce(view, pendingAppearanceUpdates) {
+                                injector.onAppearanceChanged(view, tint)
+                            }
                         }
                     })
                 }
@@ -183,7 +235,10 @@ class HookInstaller(
         guarded {
             XposedBridge.hookAllMethods(ImageView::class.java, "setImageTintList", object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) = guarded {
-                    injector.onOriginalTintChanged(param.thisObject as? ImageView ?: return@guarded)
+                    val image = param.thisObject as? ImageView ?: return@guarded
+                    postMainOnce(image, pendingTintUpdates) {
+                        injector.onOriginalTintChanged(image)
+                    }
                 }
             })
         }
@@ -201,11 +256,7 @@ class HookInstaller(
         XposedBridge.hookAllMethods(ViewGroup::class.java, "onAttachedToWindow", object : XC_MethodHook() {
             override fun afterHookedMethod(param: MethodHookParam) = guarded {
                 val view = param.thisObject as? ViewGroup ?: return@guarded
-                val resourceName = runCatching {
-                    if (view.id == View.NO_ID) "" else view.resources.getResourceEntryName(view.id)
-                }.getOrDefault("")
-                if (resourceName !in compatibility.batteryViewResourceNames) return@guarded
-                injector.injectBatteryView(view)
+                postBatteryUpdate(view)
             }
         })
         guarded {
@@ -213,24 +264,18 @@ class HookInstaller(
             // initial layout scan. Catch both the base View lifecycle and the
             // actual parent insertion so a late Compose anchor cannot expose
             // the native percentage for one frame or bypass the merge.
-            XposedBridge.hookAllMethods(View::class.java, "onAttachedToWindow", object : XC_MethodHook() {
+        XposedBridge.hookAllMethods(View::class.java, "onAttachedToWindow", object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) = guarded {
                     val view = param.thisObject as? ViewGroup ?: return@guarded
-                    val resourceName = runCatching {
-                        if (view.id == View.NO_ID) "" else view.resources.getResourceEntryName(view.id)
-                    }.getOrDefault("")
-                    if (resourceName in compatibility.batteryViewResourceNames) injector.injectBatteryView(view)
+                    postBatteryUpdate(view)
                 }
             })
         }
         guarded {
-            XposedBridge.hookAllMethods(ViewGroup::class.java, "addView", object : XC_MethodHook() {
+        XposedBridge.hookAllMethods(ViewGroup::class.java, "addView", object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) = guarded {
                     val view = param.args.firstOrNull { it is View } as? ViewGroup ?: return@guarded
-                    val resourceName = runCatching {
-                        if (view.id == View.NO_ID) "" else view.resources.getResourceEntryName(view.id)
-                    }.getOrDefault("")
-                    if (resourceName in compatibility.batteryViewResourceNames) injector.injectBatteryView(view)
+                    postBatteryUpdate(view)
                 }
             })
         }
@@ -241,7 +286,10 @@ class HookInstaller(
                 guarded {
                     XposedBridge.hookAllMethods(clazz, method, object : XC_MethodHook() {
                         override fun afterHookedMethod(param: MethodHookParam) = guarded {
-                            injector.onBatteryViewChanged(param.thisObject as? ViewGroup ?: return@guarded)
+                            val view = param.thisObject as? ViewGroup ?: return@guarded
+                            postMainOnce(view, pendingBatteryUpdates) {
+                                injector.onBatteryViewChanged(view)
+                            }
                         }
                     })
                 }
@@ -251,7 +299,9 @@ class HookInstaller(
                     override fun afterHookedMethod(param: MethodHookParam) = guarded {
                         val view = param.thisObject as? ViewGroup ?: return@guarded
                         val tint = param.args.lastOrNull { it is Int } as? Int
-                        injector.onBatteryAppearanceChanged(view, tint)
+                        postMainOnce(view, pendingBatteryUpdates) {
+                            injector.onBatteryAppearanceChanged(view, tint)
+                        }
                     }
                 })
             }
@@ -274,7 +324,7 @@ class HookInstaller(
                             "com.android.systemui.statusbar.phone.PhoneStatusBarView",
                             "com.android.systemui.statusbar.window.StatusBarWindowView",
                             "com.android.systemui.shade.NotificationShadeWindowView",
-                            -> injector.onStatusRootDraw(root)
+                            -> postStatusRootDraw(root)
                         }
                     }
                 })
@@ -291,7 +341,7 @@ class HookInstaller(
                         when (root.javaClass.name) {
                             "com.android.systemui.shade.NotificationShadeWindowView",
                             "com.android.systemui.statusbar.phone.KeyguardStatusBarView",
-                            -> injector.onStatusRootDraw(root)
+                            -> postStatusRootDraw(root)
                         }
                     }
                 })
@@ -307,7 +357,7 @@ class HookInstaller(
                         val hooks = XposedBridge.hookAllMethods(clazz, method, object : XC_MethodHook() {
                             override fun afterHookedMethod(param: MethodHookParam) = guarded {
                                 val root = param.thisObject as? ViewGroup ?: return@guarded
-                                injector.onStatusRootDraw(root)
+                                postStatusRootDraw(root)
                             }
                         })
                         if (hooks.isNotEmpty()) onEvent("hook-installed", "$className#$method count=${hooks.size}")
@@ -325,7 +375,7 @@ class HookInstaller(
                     val hooks = XposedBridge.hookAllMethods(clazz, "onDraw", object : XC_MethodHook() {
                         override fun afterHookedMethod(param: MethodHookParam) = guarded {
                             val root = param.thisObject as? ViewGroup ?: return@guarded
-                            injector.onStatusRootDraw(root)
+                            postStatusRootDraw(root)
                         }
                     })
                     if (hooks.isNotEmpty()) onEvent("hook-installed", "$className#onDraw count=${hooks.size}")
@@ -356,7 +406,7 @@ class HookInstaller(
                                 showing != null -> showing
                                 else -> return@guarded
                             }
-                            injector.onKeyguardStateChanged(locked)
+                            postKeyguardState(locked)
                         }
                     })
                     if (hooks.isNotEmpty()) onEvent("hook-installed", "$className#$method count=${hooks.size}")
@@ -377,10 +427,10 @@ class HookInstaller(
                 ) return@guarded
                 val loader = param.thisObject as? ClassLoader ?: return@guarded
                 when (className) {
-                    shadeClassName -> installShadeExpansionMirrors(loader)
-                    shadeStateManagerClassName -> installShadeStateManagerMirror(loader)
-                    quickSettingsClassName -> installQuickSettingsExpansionMirror(loader)
-                    else -> installControlCenterExpansionMirrors(loader)
+                    shadeClassName -> tryInstallShadeExpansionMirrors(loader)
+                    shadeStateManagerClassName -> tryInstallShadeStateManagerMirror(loader)
+                    quickSettingsClassName -> tryInstallQuickSettingsExpansionMirror(loader)
+                    else -> tryInstallControlCenterExpansionMirrors(loader)
                 }
             }
         })
@@ -391,7 +441,7 @@ class HookInstaller(
             override fun afterHookedMethod(param: MethodHookParam) = guarded {
                 val child = param.args.firstOrNull { it is View } as? View ?: return@guarded
                 if (child.javaClass.name != shadeViewClassName) return@guarded
-                installShadeViewMirrors(child.javaClass.classLoader ?: classLoader)
+                requestShadeViewMirrors(child.javaClass.classLoader ?: classLoader)
             }
         })
     }
@@ -408,8 +458,7 @@ class HookInstaller(
                     tryInstallShadeExpansionMirrors(loader)
                     if (compatibility.mergedSignalDisplay) {
                         val shade = param.thisObject as? ViewGroup ?: return@guarded
-                        val action = Runnable { guarded { injector.scanAndInject(shade) } }
-                        if (Looper.myLooper() == Looper.getMainLooper()) action.run() else main.post(action)
+                        postScan(shade, null, -1)
                     }
                 }
             })
@@ -430,13 +479,13 @@ class HookInstaller(
         }
         var installed = false
         guarded {
-            val hooks = XposedBridge.hookAllMethods(clazz, "setExpandedFraction", object : XC_MethodHook() {
+                val hooks = XposedBridge.hookAllMethods(clazz, "setExpandedFraction", object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) = guarded {
                     val fraction = param.args.firstOrNull { it is Float } as? Float
                         ?: return@guarded
                     // Only the fully expanded panel hides signal rows. The
                     // intermediate drag position remains visually intact.
-                    injector.onShadeExpansionChanged(fraction >= 0.99f)
+                    shadeExpansionUpdate.post(fraction >= 0.99f)
                 }
             })
             if (hooks.isNotEmpty()) {
@@ -447,7 +496,10 @@ class HookInstaller(
         guarded {
             val hooks = XposedBridge.hookAllMethods(clazz, "setExpandedHeight", object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) = guarded {
-                    readShadeFullyExpanded(param.thisObject)?.let(injector::onShadeExpansionChanged)
+                    val target = param.thisObject ?: return@guarded
+                    postWorkerOnce(target) {
+                        readShadeFullyExpanded(target)?.let(shadeExpansionUpdate::post)
+                    }
                 }
             })
             if (hooks.isNotEmpty()) {
@@ -460,7 +512,7 @@ class HookInstaller(
                 val hooks = XposedBridge.hookAllMethods(clazz, method, object : XC_MethodHook() {
                     override fun afterHookedMethod(param: MethodHookParam) = guarded {
                         val expanded = param.result as? Boolean ?: return@guarded
-                        injector.onShadeExpansionChanged(expanded)
+                        shadeExpansionUpdate.post(expanded)
                     }
                 })
                 if (hooks.isNotEmpty()) {
@@ -479,7 +531,7 @@ class HookInstaller(
     private fun scheduleShadeExpansionRetry(loader: ClassLoader) {
         if (shadeExpansionRetryCount >= 30) return
         shadeExpansionRetryCount++
-        main.postDelayed({ guarded { installShadeExpansionMirrors(loader) } }, 1_000L)
+        worker.postDelayed({ tryInstallShadeExpansionMirrors(loader) }, 1_000L)
     }
 
     private fun installShadeStateManagerMirror(loader: ClassLoader = classLoader) {
@@ -495,7 +547,7 @@ class HookInstaller(
                     // ShadeExpansionStateManager uses CLOSED=0,
                     // OPENING=1 and OPEN=2. Only OPEN is the fully
                     // expanded panel requested by the user.
-                    injector.onShadeExpansionChanged(state == 2)
+                    shadeExpansionUpdate.post(state == 2)
                 }
             })
             if (hooks.isNotEmpty()) {
@@ -510,7 +562,7 @@ class HookInstaller(
     private fun scheduleShadeStateManagerRetry(loader: ClassLoader) {
         if (shadeStateManagerRetryCount >= 30) return
         shadeStateManagerRetryCount++
-        main.postDelayed({ guarded { installShadeStateManagerMirror(loader) } }, 1_000L)
+        worker.postDelayed({ tryInstallShadeStateManagerMirror(loader) }, 1_000L)
     }
 
     private fun installQuickSettingsExpansionMirror(loader: ClassLoader = classLoader) {
@@ -525,7 +577,7 @@ class HookInstaller(
                 override fun afterHookedMethod(param: MethodHookParam) = guarded {
                     val expanded = param.args.firstOrNull { it is Boolean } as? Boolean
                         ?: return@guarded
-                    injector.onShadeQsExpandedChanged(expanded)
+                    shadeQsExpansionUpdate.post(expanded)
                 }
             })
             if (hooks.isNotEmpty()) installed = true
@@ -533,7 +585,7 @@ class HookInstaller(
         guarded {
             val hooks = XposedBridge.hookAllMethods(clazz, "getExpanded", object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) = guarded {
-                    (param.result as? Boolean)?.let(injector::onShadeQsExpandedChanged)
+                    (param.result as? Boolean)?.let(shadeQsExpansionUpdate::post)
                 }
             })
             if (hooks.isNotEmpty()) installed = true
@@ -549,7 +601,7 @@ class HookInstaller(
     private fun scheduleQuickSettingsExpansionRetry(loader: ClassLoader) {
         if (quickSettingsExpansionRetryCount >= 30) return
         quickSettingsExpansionRetryCount++
-        main.postDelayed({ guarded { installQuickSettingsExpansionMirror(loader) } }, 1_000L)
+        worker.postDelayed({ tryInstallQuickSettingsExpansionMirror(loader) }, 1_000L)
     }
 
     private fun installControlCenterExpansionMirrors(loader: ClassLoader = classLoader) {
@@ -563,8 +615,8 @@ class HookInstaller(
                         val fraction = param.args.firstOrNull { it is Float } as? Float
                         val visible = param.args.firstOrNull { it is Boolean } as? Boolean
                         when {
-                            fraction != null -> injector.onControlCenterFractionChanged(fraction)
-                            visible != null -> injector.onControlCenterVisibilityChanged(visible)
+                            fraction != null -> controlCenterFractionUpdate.post(fraction)
+                            visible != null -> controlCenterVisibilityUpdate.post(visible)
                         }
                     }
                 })
@@ -578,21 +630,168 @@ class HookInstaller(
     }
 
     private fun tryInstallShadeExpansionMirrors(loader: ClassLoader) {
-        if (shadeExpansionMirrorsInstalled) return
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            installShadeExpansionMirrors(loader)
-        } else {
-            main.post { guarded { installShadeExpansionMirrors(loader) } }
-        }
+        if (!isHookEnabled() || shadeExpansionMirrorsInstalled ||
+            !shadeExpansionInstallQueued.compareAndSet(false, true)
+        ) return
+        if (!worker.post {
+                try {
+                    guarded { installShadeExpansionMirrors(loader) }
+                } finally {
+                    shadeExpansionInstallQueued.set(false)
+                }
+            }) shadeExpansionInstallQueued.set(false)
     }
 
     private fun tryInstallControlCenterExpansionMirrors(loader: ClassLoader) {
-        if (controlCenterExpansionMirrorsInstalled) return
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            installControlCenterExpansionMirrors(loader)
-        } else {
-            main.post { guarded { installControlCenterExpansionMirrors(loader) } }
+        if (!isHookEnabled() || controlCenterExpansionMirrorsInstalled ||
+            !controlCenterInstallQueued.compareAndSet(false, true)
+        ) return
+        if (!worker.post {
+                try {
+                    guarded { installControlCenterExpansionMirrors(loader) }
+                } finally {
+                    controlCenterInstallQueued.set(false)
+                }
+            }) controlCenterInstallQueued.set(false)
+    }
+
+    private fun tryInstallShadeStateManagerMirror(loader: ClassLoader) {
+        if (!isHookEnabled() || shadeStateManagerMirrorInstalled ||
+            !shadeStateManagerInstallQueued.compareAndSet(false, true)
+        ) return
+        if (!worker.post {
+                try {
+                    guarded { installShadeStateManagerMirror(loader) }
+                } finally {
+                    shadeStateManagerInstallQueued.set(false)
+                }
+            }) shadeStateManagerInstallQueued.set(false)
+    }
+
+    private fun tryInstallQuickSettingsExpansionMirror(loader: ClassLoader) {
+        if (!isHookEnabled() || quickSettingsExpansionMirrorInstalled ||
+            !quickSettingsInstallQueued.compareAndSet(false, true)
+        ) return
+        if (!worker.post {
+                try {
+                    guarded { installQuickSettingsExpansionMirror(loader) }
+                } finally {
+                    quickSettingsInstallQueued.set(false)
+                }
+            }) quickSettingsInstallQueued.set(false)
+    }
+
+    private fun requestShadeViewMirrors(loader: ClassLoader) {
+        if (!isHookEnabled() || shadeViewMirrorInstalled ||
+            !shadeViewInstallQueued.compareAndSet(false, true)
+        ) return
+        if (!worker.post {
+                try {
+                    guarded { installShadeViewMirrors(loader) }
+                } finally {
+                    shadeViewInstallQueued.set(false)
+                }
+            }) shadeViewInstallQueued.set(false)
+    }
+
+    /**
+     * Keep view discovery and hierarchy mutation on SystemUI's UI thread, but
+     * collapse bursts from LayoutInflater/View callbacks to one scan per root.
+     */
+    private fun postWorkerOnce(target: Any, action: () -> Unit) {
+        synchronized(pendingWorkerObjects) {
+            if (!pendingWorkerObjects.add(target)) return
         }
+        if (!worker.post {
+                try {
+                    guarded(action)
+                } finally {
+                    synchronized(pendingWorkerObjects) { pendingWorkerObjects.remove(target) }
+                }
+            }) {
+            synchronized(pendingWorkerObjects) { pendingWorkerObjects.remove(target) }
+        }
+    }
+
+    private fun postScan(root: View, role: ViewRole?, subId: Int) {
+        var schedule = false
+        synchronized(pendingScans) {
+            val pending = pendingScans[root]
+            if (pending == null) {
+                pendingScans[root] = PendingScan(root, role, subId)
+                schedule = true
+            } else {
+                // A broad scan supersedes a role-specific scan for the same
+                // root; otherwise a late callback could miss its peer icon.
+                pending.role = if (pending.role == null || role == null) null else role
+                if (subId >= 0) pending.subId = subId
+            }
+        }
+        if (!schedule) return
+        if (!main.post {
+                val pending = synchronized(pendingScans) { pendingScans.remove(root) }
+                if (pending != null) {
+                    guarded { injector.scanAndInject(pending.root, pending.role, pending.subId) }
+                }
+            }) {
+            synchronized(pendingScans) { pendingScans.remove(root) }
+        }
+    }
+
+    private fun postMainOnce(view: View, pending: MutableSet<View>, action: () -> Unit) {
+        synchronized(pending) {
+            if (!pending.add(view)) return
+        }
+        if (!main.post {
+                try {
+                    guarded(action)
+                } finally {
+                    synchronized(pending) { pending.remove(view) }
+                }
+            }) {
+            synchronized(pending) { pending.remove(view) }
+        }
+    }
+
+    private fun postBatteryUpdate(view: ViewGroup) {
+        postMainOnce(view, pendingBatteryInjections) {
+            val resourceName = runCatching {
+                if (view.id == View.NO_ID) "" else view.resources.getResourceEntryName(view.id)
+            }.getOrDefault("")
+            if (resourceName in compatibility.batteryViewResourceNames) {
+                injector.injectBatteryView(view)
+            }
+        }
+    }
+
+    private fun postStatusRootDraw(root: ViewGroup) {
+        val now = SystemClock.uptimeMillis()
+        synchronized(statusRootPostTimes) {
+            val previous = statusRootPostTimes[root] ?: Long.MIN_VALUE
+            if (now - previous < STATUS_ROOT_POST_INTERVAL_MS) return
+            statusRootPostTimes[root] = now
+        }
+        postMainOnce(root, pendingStatusRootDraws) {
+            injector.onStatusRootDraw(root)
+        }
+    }
+
+    private fun postKeyguardState(locked: Boolean) {
+        pendingKeyguardState = locked
+        if (!keyguardStateQueued.compareAndSet(false, true)) return
+        if (!main.post {
+                val applied = pendingKeyguardState
+                try {
+                    if (isHookEnabled()) injector.onKeyguardStateChanged(applied)
+                } catch (throwable: Throwable) {
+                    onError(throwable)
+                } finally {
+                    keyguardStateQueued.set(false)
+                    if (pendingKeyguardState != applied && isHookEnabled()) {
+                        postKeyguardState(pendingKeyguardState)
+                    }
+                }
+            }) keyguardStateQueued.set(false)
     }
 
     private fun findShadeView(view: View): View? {
@@ -613,11 +812,13 @@ class HookInstaller(
             runCatching { XposedHelpers.callMethod(target, method) as? Boolean }.getOrNull()
         }
 
-    private fun findView(param: XC_MethodHook.MethodHookParam): View? {
-        return param.getResult() as? View
-            ?: param.args.firstOrNull { it is View } as? View
-            ?: param.thisObject as? View
-            ?: runCatching { XposedHelpers.callMethod(param.thisObject, "getView") as? View }.getOrNull()
+    private fun findView(result: Any?, args: Array<Any?>, thisObject: Any?): View? {
+        return result as? View
+            ?: args.firstOrNull { it is View } as? View
+            ?: thisObject as? View
+            ?: runCatching {
+                thisObject?.let { XposedHelpers.callMethod(it, "getView") as? View }
+            }.getOrNull()
     }
 
     private fun readIntField(target: Any?, names: List<String>): Int {
@@ -630,6 +831,47 @@ class HookInstaller(
     }
 
     private inline fun guarded(block: () -> Unit) {
+        if (!isHookEnabled()) return
         runCatching(block).onFailure(onError)
     }
 }
+
+private data class PendingScan(
+    val root: View,
+    var role: ViewRole?,
+    var subId: Int,
+)
+
+private fun weakViewSet(): MutableSet<View> =
+    Collections.newSetFromMap(WeakHashMap<View, Boolean>())
+
+private class LatestUiUpdate<T>(
+    initial: T,
+    private val main: Handler,
+    private val isEnabled: () -> Boolean,
+    private val action: (T) -> Unit,
+    private val onError: (Throwable) -> Unit,
+) {
+    private val queued = AtomicBoolean(false)
+
+    @Volatile
+    private var latest = initial
+
+    fun post(value: T) {
+        latest = value
+        if (!queued.compareAndSet(false, true)) return
+        if (!main.post {
+                val applied = latest
+                try {
+                    if (isEnabled()) action(applied)
+                } catch (throwable: Throwable) {
+                    onError(throwable)
+                } finally {
+                    queued.set(false)
+                    if (latest != applied && isEnabled()) post(latest)
+                }
+            }) queued.set(false)
+    }
+}
+
+private const val STATUS_ROOT_POST_INTERVAL_MS = 250L

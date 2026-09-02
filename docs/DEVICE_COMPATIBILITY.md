@@ -12,6 +12,7 @@
 - 小米状态栏重建入口：`MiuiPhoneStatusBarView` 和 `MiuiCollapsedStatusBarFragment` 的生命周期方法。
 - 关键资源：`mobile_signal`、`wifi_signal`、`status_bar_mobile_signal_group_new`、`status_bar_mobile_signal_group_inner`、`new_status_bar_wifi_group`、`status_bar_wifi_group_inner`。
 - 已覆盖：5G/4G 标签、卡 2 数据活动图标避让、双卡独立读数、浅色/深色状态栏、锁屏和 HyperOS 控制中心颜色同步。
+- `1.0.44` 将 SystemUI Hook 的配置读取、信号查询、广播回调和高频 UI 维护改为后台执行与主线程合并更新，并提供独立关闭 SystemUI Hook 的开关；目标设备的 Android 16 / HyperOS 3 实机三次重启验收待设备重新连接后进行。
 
 小米/Redmi/POCO 的 HyperOS 3 是当前稳定适配目标，用户可以安装模块 APK，在 Vector/Xposed 中只勾选 `com.android.systemui` 后重载 SystemUI。厂商更新仍可能改变内部结构，升级后应重新验证。
 

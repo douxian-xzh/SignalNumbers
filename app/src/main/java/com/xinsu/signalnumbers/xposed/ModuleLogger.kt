@@ -1,7 +1,6 @@
 package com.xinsu.signalnumbers.xposed
 
 import com.xinsu.signalnumbers.config.RemoteConfigClient
-import de.robv.android.xposed.XposedBridge
 import java.util.concurrent.ConcurrentHashMap
 
 class ModuleLogger(private val configClient: RemoteConfigClient) {
@@ -13,7 +12,6 @@ class ModuleLogger(private val configClient: RemoteConfigClient) {
         if (now - previous < intervalMs) return
         lastByKey[key] = now
         val line = "SignalNumbers [$key] $message"
-        XposedBridge.log(line)
         configClient.log(line)
     }
 

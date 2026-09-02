@@ -25,11 +25,11 @@ class MobileSignalTracker(
     private val context: Context,
     private val onChanged: (Map<Int, MobileReading>) -> Unit,
     private val onError: (Throwable) -> Unit,
+    private val executor: Executor,
 ) {
     private val subscriptionManager = context.getSystemService(SubscriptionManager::class.java)
     private val telephonyManager = context.getSystemService(TelephonyManager::class.java)
     private val powerManager = context.getSystemService(PowerManager::class.java)
-    private val executor = Executor { context.mainExecutor.execute(it) }
     private val callbacks = mutableMapOf<Int, PerSubscriptionCallback>()
     private val readings = mutableMapOf<Int, MobileReading>()
 

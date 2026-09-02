@@ -13,12 +13,14 @@ import android.net.wifi.WifiInfo
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.PowerManager
+import android.os.Handler
 
 @SuppressLint("MissingPermission") // Calls run in com.android.systemui, which owns the required network permissions.
 class WifiSignalTracker(
     private val context: Context,
     private val onChanged: (WifiReading) -> Unit,
     private val onError: (Throwable) -> Unit,
+    private val callbackHandler: Handler,
 ) {
     private val connectivity = context.getSystemService(ConnectivityManager::class.java)
     private val wifiManager = context.getSystemService(WifiManager::class.java)
@@ -44,14 +46,18 @@ class WifiSignalTracker(
     fun start() = guarded {
         if (registered) return@guarded
         val request = NetworkRequest.Builder().addTransportType(NetworkCapabilities.TRANSPORT_WIFI).build()
-        connectivity.registerNetworkCallback(request, networkCallback)
+        connectivity.registerNetworkCallback(request, networkCallback, callbackHandler)
         val filter = IntentFilter().apply {
             addAction(WifiManager.RSSI_CHANGED_ACTION)
             addAction(WifiManager.NETWORK_STATE_CHANGED_ACTION)
             addAction(WifiManager.WIFI_STATE_CHANGED_ACTION)
         }
-        if (Build.VERSION.SDK_INT >= 33) context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
-        else @Suppress("DEPRECATION") context.registerReceiver(receiver, filter)
+        if (Build.VERSION.SDK_INT >= 33) {
+            context.registerReceiver(receiver, filter, null, callbackHandler, Context.RECEIVER_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            context.registerReceiver(receiver, filter, null, callbackHandler)
+        }
         registered = true
         refresh()
     }

@@ -4,6 +4,7 @@ import android.app.KeyguardManager
 import android.content.res.ColorStateList
 import android.graphics.Color
 import android.graphics.Typeface
+import android.os.SystemClock
 import android.text.Layout
 import android.text.SpannableString
 import android.text.SpannableStringBuilder
@@ -44,6 +45,7 @@ class ViewInjector(
     private val keyguardMergedByContainer = WeakHashMap<ViewGroup, KeyguardMergedSignalView>()
     private val keyguardHiddenSystemIcons = WeakHashMap<View, HiddenViewState>()
     private val all = mutableListOf<WeakReference<InjectedSignalView>>()
+    @Volatile private var hookEnabled = false
     private var config = ModuleConfig()
     private var snapshot = SignalSnapshot()
     private val alphaGuard = ThreadLocal<Boolean>()
@@ -63,6 +65,16 @@ class ViewInjector(
     private var shadeAppearanceTint: Int? = null
     private var shadeMobileAppearanceTint: Int? = null
     private var shadeWifiAppearanceTint: Int? = null
+    private var lastStatusRootMaintenanceAt = 0L
+    private var lastStatusRootMaintenanceRoot: WeakReference<ViewGroup>? = null
+
+    fun setHookEnabled(enabled: Boolean) {
+        if (hookEnabled == enabled) return
+        hookEnabled = enabled
+        if (!enabled) {
+            runCatching { restoreAllInternal() }.onFailure(onError)
+        }
+    }
 
     fun scanAndInject(root: View, forcedRole: ViewRole? = null, hintedSubId: Int = -1) = guarded {
         locator.locate(root, forcedRole).forEach { candidate ->
@@ -363,6 +375,7 @@ class ViewInjector(
     }
 
     fun onStatusRootDraw(root: ViewGroup) = guarded {
+        if (!shouldRunStatusRootMaintenance(root)) return@guarded
         // KeyguardStatusBarView is a lockscreen-only child, but its context
         // can briefly report an unlocked KeyguardManager while the parent
         // NotificationShadeWindowView is still showing the keyguard. Do not
@@ -447,10 +460,11 @@ class ViewInjector(
         if (updated > 0) onEvent("keyguard locked=$locked root=${root?.javaClass?.name ?: "all"} tint=${if (locked) "ffffffff" else "original"} forced=${isForcedWhite()} wasForced=$forcedWhiteBefore injected=$updated")
     }
 
-    fun updateConfig(value: ModuleConfig) = guarded {
+    fun updateConfig(value: ModuleConfig) = runCatching {
         config = value
-        if (!value.enabled || value.safeMode) restoreAll() else renderAll()
-    }
+        if (!hookEnabled) return@runCatching
+        if (!value.enabled || value.safeMode) restoreAllInternal() else renderAll()
+    }.onFailure(onError)
 
     fun updateSignals(value: SignalSnapshot) = guarded {
         snapshot = value
@@ -547,7 +561,11 @@ class ViewInjector(
         }
     }
 
-    fun restoreAll() = guarded {
+    fun restoreAll() {
+        runCatching { restoreAllInternal() }.onFailure(onError)
+    }
+
+    private fun restoreAllInternal() {
         restoreKeyguardNativeSystemIcons()
         keyguardMergedByContainer.values.toList().forEach(::restoreKeyguardMerged)
         mergedByBattery.values.toList().forEach(::restoreMerged)
@@ -560,6 +578,16 @@ class ViewInjector(
         byNetworkType.clear()
         byMobileActivity.clear()
         all.clear()
+    }
+
+    private fun shouldRunStatusRootMaintenance(root: ViewGroup): Boolean {
+        val now = SystemClock.uptimeMillis()
+        if (lastStatusRootMaintenanceRoot?.get() === root &&
+            now - lastStatusRootMaintenanceAt < STATUS_ROOT_MAINTENANCE_INTERVAL_MS
+        ) return false
+        lastStatusRootMaintenanceRoot = WeakReference(root)
+        lastStatusRootMaintenanceAt = now
+        return true
     }
 
     private fun inject(image: ImageView, role: ViewRole, hintedSubId: Int) {
@@ -1599,7 +1627,12 @@ class ViewInjector(
     }
 
     private inline fun guarded(block: () -> Unit) {
+        if (!hookEnabled) return
         runCatching(block).onFailure(onError)
+    }
+
+    companion object {
+        private const val STATUS_ROOT_MAINTENANCE_INTERVAL_MS = 250L
     }
 }
 

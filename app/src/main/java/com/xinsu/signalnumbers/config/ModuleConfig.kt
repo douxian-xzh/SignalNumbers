@@ -4,6 +4,7 @@ import android.os.Bundle
 
 data class ModuleConfig(
     val enabled: Boolean = true,
+    val systemUiHookEnabled: Boolean = true,
     val mobileEnabled: Boolean = true,
     val wifiEnabled: Boolean = true,
     val showMinus: Boolean = true,
@@ -20,6 +21,7 @@ data class ModuleConfig(
 
     fun toBundle() = Bundle().apply {
         putBoolean(Keys.ENABLED, enabled)
+        putBoolean(Keys.SYSTEM_UI_HOOK, systemUiHookEnabled)
         putBoolean(Keys.MOBILE, mobileEnabled)
         putBoolean(Keys.WIFI, wifiEnabled)
         putBoolean(Keys.MINUS, showMinus)
@@ -42,6 +44,7 @@ data class ModuleConfig(
 
         fun from(bundle: Bundle?) = if (bundle == null) ModuleConfig() else ModuleConfig(
             enabled = bundle.getBoolean(Keys.ENABLED, true),
+            systemUiHookEnabled = bundle.getBoolean(Keys.SYSTEM_UI_HOOK, true),
             mobileEnabled = bundle.getBoolean(Keys.MOBILE, true),
             wifiEnabled = bundle.getBoolean(Keys.WIFI, true),
             showMinus = bundle.getBoolean(Keys.MINUS, true),
@@ -59,6 +62,7 @@ data class ModuleConfig(
 
 object Keys {
     const val ENABLED = "enabled"
+    const val SYSTEM_UI_HOOK = "system_ui_hook_enabled"
     const val MOBILE = "mobile_enabled"
     const val WIFI = "wifi_enabled"
     const val MINUS = "show_minus"

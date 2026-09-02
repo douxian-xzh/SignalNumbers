@@ -5,12 +5,14 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.os.BatteryManager
+import android.os.Handler
 
 /** Delivers the current battery percentage to the SystemUI-side renderer. */
 class BatteryLevelTracker(
     private val context: Context,
     private val onChanged: (Int?) -> Unit,
     private val onError: (Throwable) -> Unit,
+    private val callbackHandler: Handler,
 ) {
     private val batteryManager = context.getSystemService(BatteryManager::class.java)
     private var registered = false
@@ -26,10 +28,10 @@ class BatteryLevelTracker(
         if (registered) return@guarded
         val filter = IntentFilter(Intent.ACTION_BATTERY_CHANGED)
         if (android.os.Build.VERSION.SDK_INT >= 33) {
-            context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
+            context.registerReceiver(receiver, filter, null, callbackHandler, Context.RECEIVER_EXPORTED)
         } else {
             @Suppress("DEPRECATION")
-            context.registerReceiver(receiver, filter)
+            context.registerReceiver(receiver, filter, null, callbackHandler)
         }
         registered = true
         refresh()

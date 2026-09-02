@@ -12,10 +12,11 @@ object ConfigStore {
     fun read(context: Context): ModuleConfig {
         val p = prefs(context)
         if (p.getInt(KEY_SCHEMA, 0) < SCHEMA_109) {
-            p.edit().putFloat(Keys.FONT_SIZE, 14f).putInt(KEY_SCHEMA, SCHEMA_109).commit()
+            p.edit().putFloat(Keys.FONT_SIZE, 14f).putInt(KEY_SCHEMA, SCHEMA_109).apply()
         }
         return ModuleConfig(
             enabled = p.getBoolean(Keys.ENABLED, true),
+            systemUiHookEnabled = p.getBoolean(Keys.SYSTEM_UI_HOOK, true),
             mobileEnabled = p.getBoolean(Keys.MOBILE, true),
             wifiEnabled = p.getBoolean(Keys.WIFI, true),
             showMinus = p.getBoolean(Keys.MINUS, true),

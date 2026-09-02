@@ -53,6 +53,14 @@ class SettingsActivity : Activity() {
             setPadding(0, (6 * density).toInt(), 0, (14 * density).toInt())
         })
 
+        section(root, "SystemUI Hook")
+        toggle(root, "启用 SystemUI Hook", config.systemUiHookEnabled, Keys.SYSTEM_UI_HOOK)
+        root.addView(TextView(this).apply {
+            text = "关闭后不再执行 com.android.systemui Hook；重新开启后需要重载 SystemUI。"
+            textSize = 12f
+            setPadding(0, 0, 0, 4)
+        })
+
         section(root, "替换范围")
         toggle(root, "总开关", config.enabled, Keys.ENABLED)
         toggle(root, "蜂窝信号替换", config.mobileEnabled, Keys.MOBILE)
