@@ -10,7 +10,7 @@ SignalNumbers 是一个面向 Vector/Xposed 的 Android SystemUI 模块，在运
 
 ## 当前状态
 
-- 当前版本：`1.0.44`，versionCode `45`。
+- 当前版本：`1.0.45`，versionCode `46`。
 - Xiaomi/Redmi/POCO + HyperOS 3 / Android 16：已完成当前目标设备的实机验证，可直接安装模块 APK，在 Vector/Xposed 中只勾选“系统界面”。
 - PJZ110 / LineageOS / Android 16：已实现双卡、Compose 状态栏和展开通知栏的适配路径，但仍属于适配阶段；其他系统不保证布局、颜色和 View 结构兼容。
 - 运行时通过 `CompatibilityRegistry` 按厂商、品牌、型号、设备代号、API 和系统构建标识选择 `xiaomi-hyperos3`、`pjz110-lineage` 或 `aosp` 模式。
@@ -27,7 +27,7 @@ SignalNumbers 是一个面向 Vector/Xposed 的 Android SystemUI 模块，在运
 - PJZ110 锁屏与完全展开 QS 的状态切换使用实际的 `QuickSettingsControllerImpl#setExpanded` 回调：锁屏合并行保持白色，浅色 QS 覆盖锁屏时切换黑色，收回后恢复白色；锁屏状态回调不再清零真实 QS 状态，避免信号行被误隐藏。
 - PJZ110 合并模式持续隐藏原生 Compose 蜂窝层，拦截 SystemUI 晚到的 appearance、可见性和透明度回写，避免桌面重新出现黑色原生信号并与合并元素重叠。
 - `1.0.44` 将 SystemUI 启动、Provider 配置读取、信号查询、屏幕事件和 Hook 回调改为后台工作 + 主线程合并 UI 更新；移除无业务的 `SCREEN_OFF` 回调，限制绘制维护、状态栏扫描、展开状态和信号快照的重复投递，并增加独立的 SystemUI Hook 开关。该版本尚未在目标 Android 16 / HyperOS 3 设备上完成三次重启和 ANR/RSS 实机验收。
-- 模块 Manifest、Vector/Xposed scope 和设置页均明确标注请求应用为 `com.android.systemui`。
+- 模块 Manifest 同时声明 legacy `xposedscope`、现代 `META-INF/xposed/scope.list` 和兼容性作用域文件，Vector/LSPosed 可将 `com.android.systemui` 显示为推荐作用域；运行时注入仍限制为该进程。
 - 构建使用 Gradle Wrapper，可在无额外 Gradle 安装的 Windows 环境复现。
 
 ## 维护重点

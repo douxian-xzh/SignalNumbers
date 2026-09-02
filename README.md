@@ -6,7 +6,7 @@ English: [README.en.md](README.en.md)
 
 ## 当前兼容性结论
 
-- **小米/Redmi/POCO + 澎湃 OS（HyperOS）3 / Android 16**：当前版本已完成目标设备实机验证，用户可以直接安装模块 APK，在 Vector/Xposed 中只勾选“系统界面（`com.android.systemui`）”后重载 SystemUI。
+- **小米/Redmi/POCO + 澎湃 OS（HyperOS）3 / Android 16**：当前版本已完成目标设备实机验证，用户可以直接安装模块 APK，在 Vector/Xposed 中启用模块并勾选推荐的“系统界面（`com.android.systemui`）”后重载 SystemUI。
 - **PJZ110 / LineageOS / Android 16**：已提供适配路径，但仍处于适配和持续复测阶段；其他系统的布局、颜色和双卡表现暂不保证。
 - 小米适配与其他系统通过运行时设备识别隔离。即使误把新版本安装到小米设备，也不会启用 PJZ110 专用的隐藏和布局规则。
 
@@ -60,6 +60,8 @@ English: [README.en.md](README.en.md)
 版本 `1.0.43` 修复 PJZ110 锁屏信号不显示的问题：锁屏时不再复用处于隐藏分支的电量锚点，而是将同一份合并数字挂到实际可见的状态栏右侧容器，并隐藏锁屏原生右侧组，避免电量百分比重复绘制，恢复双卡信号和电量的锁屏显示。小米适配路径不变。
 
 版本 `1.0.44` 修复 Android 16 / HyperOS 3 上 SystemUI Hook 可能造成的启动卡顿和 ANR 风险：Provider、电话/网络/电池查询与反射工作移到后台线程；屏幕接收器只注册一次且不再监听无业务的 `SCREEN_OFF`；绘制、状态栏重建和展开状态回调均采用限频/合并投递。设置页新增独立的 SystemUI Hook 开关，关闭后可保留模块安装而暂停 `com.android.systemui` 注入。小米适配路径保持隔离；Android 16 LineageOS/PJZ110 仍处于适配和实机复测阶段。
+
+版本 `1.0.45` 补充 legacy Xposed 的 `xposedscope` 推荐作用域声明，并保留现代 Xposed 的 `scope.list` 与兼容性作用域文件。Vector/LSPosed 应将“系统界面（`com.android.systemui`）”显示为推荐勾选项；模块实际注入范围仍只有该进程。
 
 版本 `1.0.42` 修复 PJZ110 桌面合并元素被原生 Compose 信号层覆盖的问题：合并模式持续拦截 SystemUI 晚到的 appearance、可见性和透明度回写，避免原生黑色信号重新出现并与白色合并元素重叠。小米适配路径不变。
 
@@ -120,7 +122,7 @@ Windows：
 
 1. 安装 APK：`adb install -r app-release.apk`。
 2. 打开 Vector，启用“信号数字化”。
-3. 作用域只勾选“系统界面（`com.android.systemui`）”。
+3. 作用域勾选推荐的“系统界面（`com.android.systemui`）”。如果管理器版本未显示推荐标记，仍只选择这个包名。
 4. 重启 SystemUI 或重启手机。
 5. 打开模块设置页按需调整；后续设置通常实时生效。
 6. 如需隐藏应用图标，可在设置页“维护”中启用“隐藏桌面图标”；之后可从 Vector 的模块详情重新进入设置。

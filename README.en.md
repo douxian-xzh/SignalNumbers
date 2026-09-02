@@ -2,13 +2,13 @@
 
 SignalNumbers is an Android SystemUI module for Vector/Xposed. It replaces cellular and Wi-Fi signal icons with live dBm values at runtime. It does not modify, resign, or replace the vendor `SystemUI.apk`, and it does not use floating windows, persistent notifications, or high-frequency polling.
 
-The current release is `v1.0.44`. Xiaomi/HyperOS 3 is the stable target; PJZ110/LineageOS remains under adaptation.
+The current release is `v1.0.45`. Xiaomi/HyperOS 3 is the stable target; PJZ110/LineageOS remains under adaptation.
 
 [中文说明](README.md)
 
 ## Compatibility status
 
-- **Xiaomi / Redmi / POCO running HyperOS 3 on Android 16:** the current Xiaomi profile has been verified on a real device. Install the module APK, enable it in Vector/Xposed, select only `System UI` (`com.android.systemui`), and reload SystemUI.
+- **Xiaomi / Redmi / POCO running HyperOS 3 on Android 16:** the current Xiaomi profile has been verified on a real device. Install the module APK, enable it in Vector/Xposed, and select the recommended `System UI` (`com.android.systemui`) scope before reloading SystemUI.
 - **PJZ110 / LineageOS / Android 16:** an adaptation path is included for dual-SIM and Compose-based SystemUI layouts, but this target is still under adaptation and continued testing.
 - **Other systems:** the generic AOSP fallback is available, but layout, colors, dual-SIM ordering, and signal View detection are not guaranteed.
 
@@ -25,14 +25,14 @@ The Xiaomi and PJZ110 profiles are isolated by runtime device detection. PJZ110-
 - Uses event-driven signal updates and pauses visual updates while the screen is off.
 - Includes a safe mode after repeated injection failures and a setting to restore the original icons.
 - Keeps SystemUI bootstrap, provider access, signal queries, and high-frequency hook callbacks off the SystemUI main thread; the settings page includes an independent SystemUI Hook switch for emergency isolation.
-- Requests only the `com.android.systemui` module scope.
+- Declares `com.android.systemui` as the recommended scope for both legacy Xposed managers and modern scope-list readers; the actual injection scope remains limited to System UI.
 - On PJZ110, merges SIM 1, SIM 2, Wi-Fi (when connected), and battery percentage into one element shown on the desktop, lock screen, collapsed shade, and fully expanded shade; native counterparts remain hidden to prevent overlapping layouts.
 
 ## Installation
 
 1. Download the APK from the [Releases](https://github.com/douxian-xzh/SignalNumbers/releases) page.
 2. Install it as a module APK. This project is used through Vector/Xposed; it does not patch the system partition.
-3. In Vector/Xposed, enable SignalNumbers and select only `com.android.systemui` / `System UI` as the scope.
+3. In Vector/Xposed, enable SignalNumbers and select the recommended `com.android.systemui` / `System UI` scope. If your manager does not show a recommendation label, select only that package manually.
 4. Reload SystemUI or reboot the phone.
 5. Open the module settings to adjust the display and maintenance options.
 
