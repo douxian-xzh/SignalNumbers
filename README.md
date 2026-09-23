@@ -21,57 +21,12 @@ English: [README.en.md](README.en.md)
 - Redmi 机型（23117RK66C / manet）
 - HyperOS 3 / Android 16（SystemUI 16.03.251211.r）
 
-版本 `1.0.15` 在保留上述 C 版信息层级的基础上增加 HyperOS 3 适配：按 SystemUI 的 `ModernStatusBarMobileView`、`ModernStatusBarWifiView` 和小米状态栏重建入口重新扫描信号视图，并隐藏 HyperOS 实际使用的 `mobile_type` / `mobile_type_single` 原始网络类型视图。模块折叠原网络类型容器，在同一个 TextView 中紧凑显示小号网络标签与大号实时数值。蜂窝按 NR/LTE/WCDMA/GSM 显示 `5G/4G/3G/2G`，Wi-Fi 显示 `WiFi`；主数值为 14sp，与电量百分比视觉高度一致。小标签单独向上校正，蜂窝与 Wi-Fi 容器会按照实际文本宽度动态伸缩，确保 `5G -100`、`5G -120` 等四位负数完整显示。
+## 主要版本变化
 
-版本 `1.0.16` 修复 LineageOS / AOSP Android 16 双卡状态栏只显示一路的问题：针对 `stacked_mobile` Compose 容器按 `slotIndex` 排序并同时渲染全部活动订阅，例如 `5G -91 / 5G -77`；单卡显示保持不变，并随实际文本宽度扩展容器。
-
-版本 `1.0.17` 修复 Redmi/HyperOS 3 在卡 2 负责蜂窝数据时，上下行指示图标与数字化 `5G` 文本重叠的问题：识别 `mobile_left_mobile_inout`，按图标实际可见状态动态增加左侧避让，并让数字文本在图标右侧区域内居中。卡 1 无上下行图标时不会额外占位。
-
-版本 `1.0.18` 修复 Redmi/HyperOS 3 浅色状态栏的颜色同步问题：SystemUI 通过 `ModernStatusBarView` 外观回调切换到浅色状态栏时，已注入的蜂窝数字会同步为黑色；深色状态栏继续同步为白色。后续信号刷新会保留当前外观 tint，不会重新变回固定白色。
-
-版本 `1.0.22` 修复 Redmi/HyperOS 3 锁屏颜色反向的问题：监听 `KeyguardStateControllerImpl` 和 `StatusBarStateControllerImpl` 的锁屏状态，锁屏期间无论状态栏 View 何时重建，数字化蜂窝/Wi-Fi 都使用白色；解锁后清除锁屏覆盖，恢复桌面或设置页的 SystemUI tint。
-
-版本 `1.0.25` 修复 Redmi/HyperOS 3 下拉控制中心颜色反向的问题：HyperOS 控制中心单独使用 `ControlCenterExpandControllerDelegate`，展开后数字化蜂窝/Wi-Fi 会强制跟随控制中心顶部的白色状态栏；同时保留 AOSP/普通通知面板展开回退。冷启动 SystemUI 后首次打开控制中心仍能正确显示白色数字。
-
-版本 `1.0.26` 在完全展开通知面板或控制中心时隐藏原生蜂窝/Wi-Fi 图标、模块数字覆盖层和 LineageOS Compose 双卡信号行，收起后重新渲染并恢复桌面、设置页和锁屏显示。PJZ110 的动态 Shade 类增加启动后短时重试，并兼容完全展开状态回调。Vector/Xposed 请求作用域已在 `app/src/main/assets/xposed_scope`、`app/src/main/resources/META-INF/xposed/scope.list` 和 Manifest 描述中明确标注为系统界面 `com.android.systemui`。
-
-版本 `1.0.27` 将完全展开时的隐藏范围收窄为状态栏下方的重复蜂窝/Wi-Fi 信号行：顶部状态栏、桌面、锁屏、设置页以及 LineageOS 顶部 Compose 双卡信号继续显示；下方行通过 SystemUI 的 Shade 容器祖先层级识别并隐藏，避免同类顶部 Wi-Fi View 被误伤。
-
-版本 `1.0.28` 修复 PJZ110 锁屏误隐藏：由于锁屏与展开面板可能复用 `ModernShadeCarrierGroupMobileView`，锁屏期间不再执行信号行隐藏，并在进入锁屏时主动恢复已被旧 Shade 状态隐藏的 View。只有明确解锁且完全展开时才隐藏下方重复行，普通下拉和锁屏数字保持显示。
-
-版本 `1.0.29` 修复 HyperOS 3 状态栏数字颜色闪烁：小米原始信号 `ImageView` 的 tint 更新不再覆盖已经由 `ModernStatusBarView` 外观回调确认的状态栏颜色，避免数字在白色和黑色之间反复切换；在外观回调尚未到达时仍保留原始 tint 作为后备。
-
-版本 `1.0.30` 修复小米完全展开控制中心颜色再次变黑：普通通知面板和 HyperOS 控制中心分别维护展开状态，普通面板的收起回调不会覆盖仍然打开的控制中心；控制中心完全展开时数字保持白色，收起后恢复最近一次 SystemUI 外观颜色。
-
-版本 `1.0.31` 恢复 PJZ110 完全展开通知栏下方的蜂窝/Wi-Fi 信号行：该行为改为适配器级开关，仅 OnePlus/PJZ110 关闭重复行隐藏；小米继续保持 v1.0.30 的行为，不受本次调整影响。
-
-版本 `1.0.32` 修复 PJZ110 展开通知栏颜色不一致：取消普通通知栏对数字的强制白色覆盖，改为跟随 LineageOS SystemUI 的实际外观 tint，使信号数字与黑色的电池、日期和时间保持一致；小米仍保留原有强制白色策略。
-
-版本 `1.0.33` 补充 PJZ110 锁屏颜色适配：关闭该适配器在锁屏期间的强制白色覆盖，通知栏和锁屏均跟随 SystemUI appearance tint；小米的锁屏白色策略保持不变。
-
-版本 `1.0.34` 修复 PJZ110 Compose/传统信号 View 颜色来源不一致：Compose 双卡数字和完全展开下方信号行统一继承传统移动/Wi-Fi 状态栏 View 的 appearance tint；小米不启用该回退路径。
-
-版本 `1.0.35` 修复 PJZ110 通知栏颜色回退污染桌面/锁屏的问题：传统 View 的同伴 tint 只在完全展开通知栏中作为临时回退，Compose 自身 tint 不再被持久覆盖；进入锁屏时重新计算布局，并隐藏被锁屏复用的下方重复蜂窝/Wi-Fi 行，避免锁屏位置错乱。小米设备和 v1.0.30 行为不变。
-
-版本 `1.0.36` 修复 PJZ110 解锁后桌面信号堆叠：LineageOS 同时保留了传统顶部蜂窝 View 和 stacked Compose 双卡容器，导致两套数字在同一位置绘制。PJZ110 现在在 Compose 双卡容器可见时隐藏传统顶部蜂窝 View；完全展开通知栏下方的信号行仍保留显示。小米适配器和 v1.0.30 行为不变。
-
-版本 `1.0.37` 增加运行时系统模式隔离：按厂商、品牌、型号、设备代号、Android API 和 HyperOS 构建标识选择 `pjz110-lineage`、`xiaomi-hyperos3` 或通用 `aosp` 模式。PJZ110 专用的 Compose/传统 View 隐藏逻辑再次检查模式标识，即使把新版本误装到小米，也不会启用 PJZ110 规则。
-
-版本 `1.0.43` 修复 PJZ110 锁屏信号不显示的问题：锁屏时不再复用处于隐藏分支的电量锚点，而是将同一份合并数字挂到实际可见的状态栏右侧容器，并隐藏锁屏原生右侧组，避免电量百分比重复绘制，恢复双卡信号和电量的锁屏显示。小米适配路径不变。
-
-版本 `1.0.44` 修复 Android 16 / HyperOS 3 上 SystemUI Hook 可能造成的启动卡顿和 ANR 风险：Provider、电话/网络/电池查询与反射工作移到后台线程；屏幕接收器只注册一次且不再监听无业务的 `SCREEN_OFF`；绘制、状态栏重建和展开状态回调均采用限频/合并投递。设置页新增独立的 SystemUI Hook 开关，关闭后可保留模块安装而暂停 `com.android.systemui` 注入。小米适配路径保持隔离；Android 16 LineageOS/PJZ110 仍处于适配和实机复测阶段。
-
-版本 `1.0.45` 补充 legacy Xposed 的 `xposedscope` 推荐作用域声明，并保留现代 Xposed 的 `scope.list` 与兼容性作用域文件。Vector/LSPosed 应将“系统界面（`com.android.systemui`）”显示为推荐勾选项；模块实际注入范围仍只有该进程。
-
-版本 `1.0.42` 修复 PJZ110 桌面合并元素被原生 Compose 信号层覆盖的问题：合并模式持续拦截 SystemUI 晚到的 appearance、可见性和透明度回写，避免原生黑色信号重新出现并与白色合并元素重叠。小米适配路径不变。
-
-版本 `1.0.41` 修复 PJZ110 桌面深色背景下合并数字仍显示黑色的问题：顶部/桌面锁屏区域与展开通知栏分别保存 SystemUI appearance tint，合并元素只使用所在区域的颜色；同时移除旧的锁屏和收起状态隐藏限制，合并元素在所有界面正常显示。小米适配路径不变。
-
-版本 `1.0.40` 为 PJZ110 启用单元素合并显示：以系统电池视图位置作为唯一锚点，将卡 1、卡 2、Wi-Fi 和电池百分比合并到一个 TextView；该合并元素在桌面、锁屏、普通下拉和完全展开状态栏均显示，系统原生蜂窝、Wi-Fi、电池和重复视图仅作为底层占位被隐藏。Wi-Fi 未连接时自动省略 Wi-Fi 项，从结构上避免多 View 重叠。小米适配路径不变。
-
-版本 `1.0.39` 修复 PJZ110 SystemUI 重排导致重复信号行重新显示：下方 `ModernShadeCarrierGroupMobileView` 行首次识别后保留行身份，即使 SystemUI 临时重挂载 View、父级链短暂变化，也继续执行下方重复行的隐藏规则；小米适配路径不变。
-
-版本 `1.0.38` 修复 PJZ110 下拉收起后重复信号行残留：`ModernShadeCarrierGroupMobileView` 下方蜂窝/Wi-Fi 行现在只允许在完全展开通知栏时显示，收起、桌面和锁屏状态统一隐藏；顶部 Compose 双卡数字保持显示，避免重复行再次压到桌面状态栏。
+- `1.0.45`：为 `com.android.systemui` 增加 Vector/LSPosed 推荐作用域声明。
+- `1.0.44`：将 SystemUI 初始化和信号查询移至后台处理，并增加独立的 Hook 开关，降低卡顿和 ANR 风险。
+- `1.0.40–1.0.43`：PJZ110 改为单元素合并显示，并完善桌面、通知栏和锁屏适配。
+- `1.0.15–1.0.37`：完成 HyperOS 3 小米适配，补充双卡、颜色及 LineageOS 适配，并隔离不同系统的规则。
 
 设备分析结果见 [docs/DEVICE_COMPATIBILITY.md](docs/DEVICE_COMPATIBILITY.md)。厂商类名、资源名和 Hook 点全部集中在 `compatibility` 包中。仓库文档不保存真实设备地址、订阅标识、实时信号快照、日志或哈希。
 
