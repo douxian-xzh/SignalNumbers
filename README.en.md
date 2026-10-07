@@ -2,13 +2,13 @@
 
 SignalNumbers is an Android SystemUI module for Vector/Xposed. It replaces cellular and Wi-Fi signal icons with live dBm values at runtime. It does not modify, resign, or replace the vendor `SystemUI.apk`, and it does not use floating windows, persistent notifications, or high-frequency polling.
 
-The current release is `v1.0.45`. Xiaomi/HyperOS 3 is the stable target; PJZ110/LineageOS remains under adaptation.
+The current version is `v1.1.2`. Xiaomi/HyperOS 3 is the stable target; signal text follows the light/dark drawable selected by MIUI. PJZ110/LineageOS remains under adaptation.
 
 [中文说明](README.md)
 
 ## Compatibility status
 
-- **Xiaomi / Redmi / POCO running HyperOS 3 on Android 16:** the current Xiaomi profile has been verified on a real device. Install the module APK, enable it in Vector/Xposed, and select the recommended `System UI` (`com.android.systemui`) scope before reloading SystemUI.
+- **Xiaomi / Redmi / POCO running HyperOS 3 on Android 16:** `1.1.2` mirrors the final signal drawable selected by MIUI. It has been checked on the target device on the desktop, lock screen, fully expanded Control Center, and a pure-white Settings page. Enable it in Vector/Xposed and select the recommended `System UI` (`com.android.systemui`) scope.
 - **PJZ110 / LineageOS / Android 16:** an adaptation path is included for dual-SIM and Compose-based SystemUI layouts, but this target is still under adaptation and continued testing.
 - **Other systems:** the generic AOSP fallback is available, but layout, colors, dual-SIM ordering, and signal View detection are not guaranteed.
 
@@ -20,7 +20,7 @@ The Xiaomi and PJZ110 profiles are isolated by runtime device detection. PJZ110-
 - Displays Wi-Fi RSSI as a compact dBm value.
 - Tracks each active subscription independently using its subscription ID and SIM slot index.
 - Supports dual-SIM rendering in LineageOS Compose containers.
-- Synchronizes injected text with SystemUI light/dark appearance, lock screen state, and HyperOS control-center behavior where supported.
+- Synchronizes injected text with SystemUI's resolved per-view light/dark appearance, lock screen state, and HyperOS control-center behavior where supported.
 - Avoids duplicate signal rows and keeps vendor data-activity indicators from overlapping the numeric display on the verified profiles.
 - Uses event-driven signal updates and pauses visual updates while the screen is off.
 - Includes a safe mode after repeated injection failures and a setting to restore the original icons.
@@ -63,6 +63,8 @@ app/src/main/java/com/xinsu/signalnumbers/
 `xposed-stubs` contains compile-time Xposed API signatures only. The real framework API is supplied by Vector/Xposed at runtime.
 
 ## Compatibility notes
+
+`1.1.2` reads the final drawable selected by HyperOS for each native signal icon; the generic SystemUI tint remains a fallback. Other HyperOS builds still need their own verification.
 
 SystemUI internals vary between Android versions and vendors. `CompatibilityRegistry` selects `xiaomi-hyperos3`, `pjz110-lineage`, or the generic `aosp` mode from the device identity. Vendor class names, resources, and hook points are kept inside the `compatibility` package.
 

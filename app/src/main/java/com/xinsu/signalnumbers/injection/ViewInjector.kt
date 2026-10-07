@@ -22,6 +22,7 @@ import android.widget.TextView
 import com.xinsu.signalnumbers.R
 import com.xinsu.signalnumbers.compatibility.CompatibilityAdapter
 import com.xinsu.signalnumbers.compatibility.CompatibilityMode
+import com.xinsu.signalnumbers.compatibility.NativeSignalAppearance
 import com.xinsu.signalnumbers.compatibility.ViewRole
 import com.xinsu.signalnumbers.config.ModuleConfig
 import com.xinsu.signalnumbers.signal.MobileReading
@@ -38,6 +39,8 @@ class ViewInjector(
 ) {
     private val locator = ViewLocator(compatibility)
     private val byOriginal = WeakHashMap<ImageView, InjectedSignalView>()
+    private val nativeSignalAppearances = WeakHashMap<ImageView, NativeSignalAppearance>()
+    private val resolvedAppearanceByRoot = WeakHashMap<View, Int>()
     private val byNetworkType = WeakHashMap<View, InjectedSignalView>()
     private val byMobileActivity = WeakHashMap<View, InjectedSignalView>()
     private val composeMobile = WeakHashMap<ViewGroup, ComposeSignalView>()
@@ -274,6 +277,12 @@ class ViewInjector(
     }
 
     fun onAppearanceChanged(root: ViewGroup, tint: Int?) = guarded {
+        if (tint != null && tint ushr 24 != 0) {
+            // Keep the latest resolved color on its originating SystemUI
+            // signal root so a number injected after the initial appearance
+            // callback starts with the same color as that icon.
+            resolvedAppearanceByRoot[root] = tint
+        }
         val appearanceSourceRole = if (tint != null && tint ushr 24 != 0) {
             compatibility.appearanceTintSourceClassNames.entries
                 .firstOrNull { root.javaClass.name in it.value }
@@ -522,13 +531,26 @@ class ViewInjector(
 
     fun onOriginalTintChanged(view: ImageView) = guarded {
         val injected = byOriginal[view] ?: return@guarded
-        // HyperOS updates the original ImageView tint after its ModernStatusBarView
-        // appearance callback. That tint is not always the final status-bar color
-        // and can overwrite a just-applied white/black appearance, causing the
-        // injected number to flicker until the next touch or layout pass. Once a
-        // status-bar appearance tint has been received, keep it authoritative;
-        // the original ImageView tint remains the fallback before that callback.
+        // MIUI tint variants may still carry a live ImageView tint list. The
+        // selected drawable mode itself takes precedence in copyTint().
         copyTint(injected)
+    }
+
+    fun onOriginalDrawableChanged(view: ImageView, resourceId: Int) = guarded {
+        if (!compatibility.useNativeSignalTint) return@guarded
+        val appearance = compatibility.resolveNativeSignalAppearance(view, resourceId)
+        if (appearance == null) {
+            if (byOriginal.containsKey(view)) {
+                nativeSignalAppearances.remove(view)
+                byOriginal[view]?.let(::copyTint)
+            }
+            return@guarded
+        }
+        if (nativeSignalAppearances[view] == appearance) return@guarded
+        nativeSignalAppearances[view] = appearance
+        val injected = byOriginal[view] ?: return@guarded
+        copyTint(injected)
+        onEvent("native icon appearance role=${injected.role} mode=${appearance.mode}")
     }
 
     fun onOriginalAlphaChanged(view: View) = guarded {
@@ -751,7 +773,7 @@ class ViewInjector(
     private fun isForcedWhite(): Boolean =
         (keyguardLocked == true && !shadeQsExpanded && compatibility.forceWhiteOnKeyguard) ||
             (shadeExpanded && compatibility.forceWhiteInExpandedShade) ||
-            controlCenterVisible
+            (controlCenterVisible && compatibility.forceWhiteInControlCenter)
 
     private fun forcedTextTint(): Int? = when {
         keyguardLocked == true &&
@@ -1398,30 +1420,71 @@ class ViewInjector(
     }
 
     private fun copyTint(view: InjectedSignalView) {
-        val forcedTint = forcedTextTint()
-        if (forcedTint != null) {
-            view.text.setTextColor(forcedTint)
-        } else {
-            // The source tint is a PJZ110 shade-only fallback. Applying it to
-            // every injected view makes a desktop/lockscreen number inherit
-            // the last notification-shade color.
-            val appearanceTint = view.appearanceTint ?: expandedShadeFallbackTint(view)
-            if (appearanceTint != null) {
-                view.text.setTextColor(appearanceTint)
-            } else {
-                val tint = view.original.imageTintList
-                if (tint != null) {
-                    view.text.setTextColor(tint.getColorForState(view.original.drawableState, tint.defaultColor))
+        if (compatibility.useNativeSignalTint) {
+            val nativeAppearance = nativeSignalAppearances[view.original]
+            val nativeTint = nativeAppearance?.let { appearance ->
+                if (appearance.usesImageTint) {
+                    val imageTint = view.original.imageTintList
+                    imageTint?.getColorForState(view.original.drawableState, imageTint.defaultColor)
+                        ?.takeIf { it ushr 24 != 0 }
+                        ?: appearance.color
                 } else {
-                    val value = TypedValue()
-                    if (view.original.context.theme.resolveAttribute(android.R.attr.textColorPrimary, value, true)) {
-                        val color = if (value.resourceId != 0) runCatching { view.original.context.getColorStateList(value.resourceId) }.getOrNull() else ColorStateList.valueOf(value.data)
-                        if (color != null) view.text.setTextColor(color)
+                    appearance.color
+                }
+            }
+            val tint = nativeTint ?: view.appearanceTint ?: resolvedAppearanceFor(view.original)
+            if (tint != null) {
+                view.text.setTextColor(tint)
+            } else {
+                // HyperOS can represent its live signal appearance by
+                // switching drawable resources rather than setting an
+                // ImageView tint list. Use the view theme only until the
+                // authoritative per-View tint callback arrives.
+                applyThemeTextTint(view)
+            }
+        } else {
+            val forcedTint = forcedTextTint()
+            if (forcedTint != null) {
+                view.text.setTextColor(forcedTint)
+            } else {
+                // The source tint is a PJZ110 shade-only fallback. Applying it to
+                // every injected view makes a desktop/lockscreen number inherit
+                // the last notification-shade color.
+                val appearanceTint = view.appearanceTint ?: expandedShadeFallbackTint(view)
+                if (appearanceTint != null) {
+                    view.text.setTextColor(appearanceTint)
+                } else {
+                    val tint = view.original.imageTintList
+                    if (tint != null) {
+                        view.text.setTextColor(tint.getColorForState(view.original.drawableState, tint.defaultColor))
+                    } else {
+                        applyThemeTextTint(view)
                     }
                 }
             }
         }
         view.text.alpha = view.originalAlpha
+    }
+
+    private fun resolvedAppearanceFor(original: View): Int? {
+        var current: View? = original
+        while (current != null) {
+            resolvedAppearanceByRoot[current]?.let { return it }
+            current = current.parent as? View
+        }
+        return null
+    }
+
+    private fun applyThemeTextTint(view: InjectedSignalView) {
+        val value = TypedValue()
+        if (view.original.context.theme.resolveAttribute(android.R.attr.textColorPrimary, value, true)) {
+            val color = if (value.resourceId != 0) {
+                runCatching { view.original.context.getColorStateList(value.resourceId) }.getOrNull()
+            } else {
+                ColorStateList.valueOf(value.data)
+            }
+            if (color != null) view.text.setTextColor(color)
+        }
     }
 
     private fun copyComposeTint(view: ComposeSignalView) {

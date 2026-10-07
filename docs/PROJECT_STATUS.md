@@ -1,6 +1,6 @@
 # 项目状态
 
-更新：2026-09-02
+更新：2026-10-07
 
 ## 项目定位
 
@@ -10,8 +10,8 @@ SignalNumbers 是一个面向 Vector/Xposed 的 Android SystemUI 模块，在运
 
 ## 当前状态
 
-- 当前版本：`1.0.45`，versionCode `46`。
-- Xiaomi/Redmi/POCO + HyperOS 3 / Android 16：已完成当前目标设备的实机验证，可直接安装模块 APK，在 Vector/Xposed 中只勾选“系统界面”。
+- 当前版本：`1.1.2`，versionCode `49`。
+- Xiaomi/Redmi/POCO + HyperOS 3 / Android 16：MIUI 的蜂窝/Wi‑Fi binder 会依据当前状态切换普通、`_darkmode`、`_tint` drawable；普通资源引用系统白色 single-tone，`_darkmode` 引用系统黑色 single-tone，`_tint` 为黑色图标资源。`1.1.1` 只读取 AOSP 暗区 tint，无法代表 MIUI 最终资源状态；`1.1.2` 监听信号 ImageView 最终设置的 drawable，并以 MIUI 资源模式优先，AOSP tint 仅作兜底。已安装在目标小米设备并核对桌面、锁屏、完全展开控制中心、纯白设置页，数字颜色均与系统原生状态图标一致；重载后未发现新的 SystemUI ANR。
 - PJZ110 / LineageOS / Android 16：已实现双卡、Compose 状态栏和展开通知栏的适配路径，但仍属于适配阶段；其他系统不保证布局、颜色和 View 结构兼容。
 - 运行时通过 `CompatibilityRegistry` 按厂商、品牌、型号、设备代号、API 和系统构建标识选择 `xiaomi-hyperos3`、`pjz110-lineage` 或 `aosp` 模式。
 
@@ -28,6 +28,7 @@ SignalNumbers 是一个面向 Vector/Xposed 的 Android SystemUI 模块，在运
 - PJZ110 合并模式持续隐藏原生 Compose 蜂窝层，拦截 SystemUI 晚到的 appearance、可见性和透明度回写，避免桌面重新出现黑色原生信号并与合并元素重叠。
 - `1.0.44` 将 SystemUI 启动、Provider 配置读取、信号查询、屏幕事件和 Hook 回调改为后台工作 + 主线程合并 UI 更新；移除无业务的 `SCREEN_OFF` 回调，限制绘制维护、状态栏扫描、展开状态和信号快照的重复投递，并增加独立的 SystemUI Hook 开关。该版本尚未在目标 Android 16 / HyperOS 3 设备上完成三次重启和 ANR/RSS 实机验收。
 - 模块 Manifest 同时声明 legacy `xposedscope`、现代 `META-INF/xposed/scope.list` 和兼容性作用域文件，Vector/LSPosed 可将 `com.android.systemui` 显示为推荐作用域；运行时注入仍限制为该进程。
+- Xiaomi 颜色同步优先读取 HyperOS 实际应用到蜂窝/Wi‑Fi ImageView 的 drawable 资源名，并从当前 SystemUI 资源表解析对应 single-tone 颜色；AOSP `DarkIconDispatcher` 结果仅为未识别资源时的兜底。PJZ110/AOSP tint 路径不变。
 - 构建使用 Gradle Wrapper，可在无额外 Gradle 安装的 Windows 环境复现。
 
 ## 维护重点

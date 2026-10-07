@@ -1,6 +1,14 @@
 package com.xinsu.signalnumbers.compatibility
 
+import android.widget.ImageView
+
 enum class ViewRole { STATUS_ROOT, MOBILE, WIFI }
+
+data class NativeSignalAppearance(
+    val color: Int,
+    val usesImageTint: Boolean,
+    val mode: String,
+)
 
 /** Runtime profile selected from the actual SystemUI host device. */
 enum class CompatibilityMode(val id: String) {
@@ -52,10 +60,16 @@ interface CompatibilityAdapter {
     val batteryViewClassNames: Set<String> get() = emptySet()
     /** SystemUI resource names used by the visible battery compositor anchor. */
     val batteryViewResourceNames: Set<String> get() = emptySet()
+    /** Whether signal text should prefer the vendor-selected native appearance over AOSP area tint. */
+    val useNativeSignalTint: Boolean get() = false
+    /** Resolve a vendor-selected signal drawable into its corresponding text appearance, if known. */
+    fun resolveNativeSignalAppearance(view: ImageView, resourceId: Int): NativeSignalAppearance? = null
     /** Whether injected signal text is forced white while the regular shade is fully expanded. */
     val forceWhiteInExpandedShade: Boolean get() = true
     /** Whether injected signal text is forced white while the keyguard is showing. */
     val forceWhiteOnKeyguard: Boolean get() = true
+    /** Whether injected signal text is forced white while HyperOS control center is visible. */
+    val forceWhiteInControlCenter: Boolean get() = true
     /** Whether injected signal text is forced black while fully expanded QS is open over keyguard. */
     val forceBlackInExpandedKeyguardShade: Boolean get() = false
     /** Traditional SystemUI View classes whose appearance tint can be shared with Compose/shade fallbacks. */

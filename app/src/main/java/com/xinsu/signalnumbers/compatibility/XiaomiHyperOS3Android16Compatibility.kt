@@ -1,5 +1,8 @@
 package com.xinsu.signalnumbers.compatibility
 
+import android.graphics.Color
+import android.widget.ImageView
+
 /**
  * Xiaomi/Redmi HyperOS 3 on Android 16.
  *
@@ -10,6 +13,40 @@ package com.xinsu.signalnumbers.compatibility
 class XiaomiHyperOS3Android16Compatibility : AospCompatibility() {
     override val name = "Xiaomi HyperOS 3 / Android 16"
     override val mode = CompatibilityMode.XIAOMI_HYPEROS3
+    override val useNativeSignalTint = true
+    override val forceWhiteInExpandedShade = false
+    override val forceWhiteOnKeyguard = false
+    override val forceWhiteInControlCenter = false
+
+    override fun resolveNativeSignalAppearance(view: ImageView, resourceId: Int): NativeSignalAppearance? {
+        val name = runCatching { view.resources.getResourceEntryName(resourceId) }.getOrNull() ?: return null
+        if (!signalDrawableName.matches(name)) return null
+        val usesSystemTint = name.endsWith("_tint")
+        val dark = usesSystemTint || name.endsWith("_darkmode")
+        val colorName = if (dark) "dark_mode_icon_color_single_tone" else "light_mode_icon_color_single_tone"
+        val fallback = if (dark) Color.BLACK else Color.WHITE
+        val colorId = view.resources.getIdentifier(colorName, "color", "com.android.systemui")
+        val color = if (colorId != 0) {
+            runCatching { view.context.getColor(colorId) }.getOrDefault(fallback)
+        } else {
+            fallback
+        }
+        return NativeSignalAppearance(
+            color = if (usesSystemTint) Color.BLACK else color,
+            usesImageTint = usesSystemTint,
+            mode = when {
+                usesSystemTint -> "tint"
+                dark -> "dark"
+                else -> "light"
+            },
+        )
+    }
+
+    private companion object {
+        val signalDrawableName = Regex(
+            "^stat_sys_(?:signal_(?:[0-4](?:_no_voice)?|null)|wifi_signal_(?:[0-3]|unavailable_[0-3]))(?:_darkmode|_tint)?$",
+        )
+    }
 
     override val mobileTypeResourceNames = setOf(
         "mobile_type_container",

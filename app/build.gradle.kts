@@ -11,8 +11,8 @@ android {
         applicationId = "com.xinsu.signalnumbers"
         minSdk = 31
         targetSdk = 36
-        versionCode = 46
-        versionName = "1.0.45"
+        versionCode = 49
+        versionName = "1.1.2"
     }
 
     buildTypes {

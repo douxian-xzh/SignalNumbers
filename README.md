@@ -6,7 +6,7 @@ English: [README.en.md](README.en.md)
 
 ## 当前兼容性结论
 
-- **小米/Redmi/POCO + 澎湃 OS（HyperOS）3 / Android 16**：当前版本已完成目标设备实机验证，用户可以直接安装模块 APK，在 Vector/Xposed 中启用模块并勾选推荐的“系统界面（`com.android.systemui`）”后重载 SystemUI。
+- **小米/Redmi/POCO + 澎湃 OS（HyperOS）3 / Android 16**：`1.1.2` 跟随 MIUI 实际选中的蜂窝/Wi‑Fi 图标资源同步数字颜色；已在目标设备的桌面、锁屏、完全展开控制中心和纯白设置页核对。安装后需在 Vector/Xposed 中启用模块并勾选推荐的“系统界面（`com.android.systemui`）”。
 - **PJZ110 / LineageOS / Android 16**：已提供适配路径，但仍处于适配和持续复测阶段；其他系统的布局、颜色和双卡表现暂不保证。
 - 小米适配与其他系统通过运行时设备识别隔离。即使误把新版本安装到小米设备，也不会启用 PJZ110 专用的隐藏和布局规则。
 
@@ -23,6 +23,9 @@ English: [README.en.md](README.en.md)
 
 ## 主要版本变化
 
+- `1.1.2`：小米数字颜色改为跟随 MIUI 最终选中的信号图标资源。
+- `1.1.1`：尝试按 SystemUI 的区域 tint 同步小米数字颜色。
+- `1.1.0`：移除锁屏、展开通知栏和控制中心的强制白色覆盖。
 - `1.0.45`：为 `com.android.systemui` 增加 Vector/LSPosed 推荐作用域声明。
 - `1.0.44`：将 SystemUI 初始化和信号查询移至后台处理，并增加独立的 Hook 开关，降低卡顿和 ANR 风险。
 - `1.0.40–1.0.43`：PJZ110 改为单元素合并显示，并完善桌面、通知栏和锁屏适配。
@@ -36,7 +39,7 @@ English: [README.en.md](README.en.md)
 - 每个活动订阅分别注册 `TelephonyCallback`，用 `subscriptionId` 与 `slotIndex` 绑定状态栏中的对应 SIM View。
 - Wi-Fi 优先读取 SystemUI 状态对象中的 RSSI；当前 PJZ110 SystemUI 模型不含 RSSI 字段，因此使用 `NetworkCapabilities/WifiInfo`、`WifiManager` 与系统 RSSI 广播作为事件驱动回退。
 - 资源名识别、View 树识别和方法特征 Hook 三层适配；只在确认已添加数字 View 后才隐藏原图标。
-- 深浅色跟随原 `ImageView` 的 tint，字体为 `sans-serif-condensed`，支持字号、粗体、负号和小号 `dBm`。
+- 深浅色优先跟随系统为原生信号图标选定的资源颜色，AOSP 使用逐 View tint 兜底；字体为 `sans-serif-condensed`，支持字号、粗体、负号和小号 `dBm`。
 - 蜂窝与 Wi-Fi 均使用简洁纯数字样式；默认使用同一套 `sans-serif-condensed` 粗体字号，并共同继承 SystemUI tint。
 - C 版标签层级：`5G -86`、`WiFi -44`；标签使用主字号的 62% 和常规字重，标签与数值之间只保留一个窄空格，负数值默认使用 14sp 粗体。
 - 配置通过导出的只读式配置 Provider + `ContentObserver` 实时传递给 SystemUI，不依赖跨进程 SharedPreferences 文件权限。

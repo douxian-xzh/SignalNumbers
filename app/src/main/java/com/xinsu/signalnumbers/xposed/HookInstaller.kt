@@ -4,6 +4,7 @@ import android.view.LayoutInflater
 import android.view.View
 import android.widget.ImageView
 import android.view.ViewGroup
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -17,6 +18,9 @@ import de.robv.android.xposed.XposedBridge
 import de.robv.android.xposed.XposedHelpers
 import java.util.Collections
 import java.util.WeakHashMap
+import java.lang.reflect.Method
+import java.lang.reflect.Modifier
+import java.util.ArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 
 class HookInstaller(
@@ -48,6 +52,10 @@ class HookInstaller(
     private val pendingBatteryUpdates = weakViewSet()
     private val pendingStatusRootDraws = weakViewSet()
     private val statusRootPostTimes = WeakHashMap<View, Long>()
+    @Volatile
+    private var darkIconTintMethod: Method? = null
+    private val darkIconTintResolverAttempted = AtomicBoolean(false)
+    private val darkIconTintResolverFailureReported = AtomicBoolean(false)
     private val keyguardStateQueued = AtomicBoolean(false)
     @Volatile
     private var pendingKeyguardState = false
@@ -217,18 +225,23 @@ class HookInstaller(
             "com.android.systemui.statusbar.pipeline.shared.ui.view.ModernStatusBarView",
             classLoader,
         )
-        if (modernView != null) {
-            listOf("setStaticDrawableColor", "setDecorColor", "onDarkChangedWithContrast", "setVisibleState").forEach { method ->
-                guarded {
-                    XposedBridge.hookAllMethods(modernView, method, object : XC_MethodHook() {
-                        override fun afterHookedMethod(param: MethodHookParam) = guarded {
-                            val view = param.thisObject as? ViewGroup ?: return@guarded
-                            val tint = param.args.firstOrNull { it is Int } as? Int
-                            postMainOnce(view, pendingAppearanceUpdates) {
-                                injector.onAppearanceChanged(view, tint)
+        if (compatibility.useNativeSignalTint) {
+            if (modernView != null) installResolvedSystemUiTintMirror(modernView)
+            installNativeSignalDrawableMirror()
+        } else {
+            if (modernView != null) {
+                listOf("setStaticDrawableColor", "setDecorColor", "onDarkChangedWithContrast", "setVisibleState").forEach { method ->
+                    guarded {
+                        XposedBridge.hookAllMethods(modernView, method, object : XC_MethodHook() {
+                            override fun afterHookedMethod(param: MethodHookParam) = guarded {
+                                val view = param.thisObject as? ViewGroup ?: return@guarded
+                                val tint = param.args.firstOrNull { it is Int } as? Int
+                                postMainOnce(view, pendingAppearanceUpdates) {
+                                    injector.onAppearanceChanged(view, tint)
+                                }
                             }
-                        }
-                    })
+                        })
+                    }
                 }
             }
         }
@@ -236,12 +249,129 @@ class HookInstaller(
             XposedBridge.hookAllMethods(ImageView::class.java, "setImageTintList", object : XC_MethodHook() {
                 override fun afterHookedMethod(param: MethodHookParam) = guarded {
                     val image = param.thisObject as? ImageView ?: return@guarded
-                    postMainOnce(image, pendingTintUpdates) {
+                    if (compatibility.useNativeSignalTint && Looper.myLooper() == Looper.getMainLooper()) {
+                        // SystemUI has already applied its resolved tint. Mirror it before the next
+                        // frame instead of replaying a possibly stale color from a later queue turn.
                         injector.onOriginalTintChanged(image)
+                    } else {
+                        postMainOnce(image, pendingTintUpdates) {
+                            injector.onOriginalTintChanged(image)
+                        }
                     }
                 }
             })
         }
+    }
+
+    /**
+     * HyperOS selects white/dark signal drawable variants in its MIUI binders.
+     * Observe the final resource ID after ImageView has applied it; that is the
+     * appearance actually rendered by the native icon, unlike AOSP's area tint.
+     */
+    private fun installNativeSignalDrawableMirror() {
+        guarded {
+            val hooks = XposedBridge.hookAllMethods(ImageView::class.java, "setImageResource", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) = guarded {
+                    val image = param.thisObject as? ImageView ?: return@guarded
+                    val resourceId = param.args.firstOrNull() as? Int ?: return@guarded
+                    val update = Runnable { guarded { injector.onOriginalDrawableChanged(image, resourceId) } }
+                    if (Looper.myLooper() == Looper.getMainLooper()) update.run() else main.post(update)
+                }
+            })
+            if (hooks.isNotEmpty()) onEvent("hook-installed", "HyperOS native signal drawable mode count=${hooks.size}")
+        }
+    }
+
+    /**
+     * The AOSP resolved tint remains an initialization fallback for Xiaomi.
+     * Once a MIUI signal drawable is observed, ViewInjector gives that final
+     * vendor-selected light/dark resource precedence.
+     */
+    private fun installResolvedSystemUiTintMirror(modernView: Class<*>) {
+        guarded {
+            XposedBridge.hookAllMethods(modernView, "onDarkChangedWithContrast", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) = guarded {
+                    val view = param.thisObject as? ViewGroup ?: return@guarded
+                    val areas = copyTintAreas(param.args.getOrNull(0)) ?: return@guarded
+                    val tint = param.args.getOrNull(1) as? Int ?: return@guarded
+                    dispatchResolvedSystemUiTint(view, areas, tint)
+                }
+            })
+        }
+        guarded {
+            // AOSP's two-color overload forwards its first argument as the
+            // resolved icon tint. Do not treat setDecorColor or visible-state
+            // callbacks as icon colors.
+            XposedBridge.hookAllMethods(modernView, "setStaticDrawableColor", object : XC_MethodHook() {
+                override fun afterHookedMethod(param: MethodHookParam) = guarded {
+                    if (param.args.size != 2) return@guarded
+                    val view = param.thisObject as? ViewGroup ?: return@guarded
+                    val tint = param.args[0] as? Int ?: return@guarded
+                    dispatchResolvedSystemUiTint(view, null, tint)
+                }
+            })
+        }
+        onEvent("hook-installed", "ModernStatusBarView resolved icon tint")
+    }
+
+    private fun copyTintAreas(value: Any?): ArrayList<Rect>? {
+        val source = value as? ArrayList<*> ?: return null
+        val copy = ArrayList<Rect>(source.size)
+        source.forEach { area ->
+            val rect = area as? Rect ?: return null
+            copy += Rect(rect)
+        }
+        return copy
+    }
+
+    private fun dispatchResolvedSystemUiTint(view: ViewGroup, areas: ArrayList<Rect>?, tint: Int) {
+        val update = Runnable {
+            guarded {
+                val resolvedTint = if (areas == null) {
+                    tint
+                } else {
+                    resolveSystemUiTint(view, areas, tint) ?: return@guarded
+                }
+                injector.onAppearanceChanged(view, resolvedTint)
+            }
+        }
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            update.run()
+        } else {
+            main.post(update)
+        }
+    }
+
+    private fun resolveSystemUiTint(view: View, areas: ArrayList<Rect>, tint: Int): Int? {
+        val method = darkIconTintMethod ?: run {
+            if (!darkIconTintResolverAttempted.compareAndSet(false, true)) return null
+            val dispatcher = XposedHelpers.findClassIfExists(
+                "com.android.systemui.plugins.DarkIconDispatcher",
+                view.javaClass.classLoader ?: classLoader,
+            )
+            val resolved = dispatcher?.methods?.firstOrNull { candidate ->
+                val parameters = candidate.parameterTypes
+                candidate.name == "getTint" &&
+                    Modifier.isStatic(candidate.modifiers) &&
+                    parameters.size == 3 &&
+                    parameters[0].isAssignableFrom(ArrayList::class.java) &&
+                    parameters[1] == View::class.java &&
+                    parameters[2] == Int::class.javaPrimitiveType
+            }
+            if (resolved == null) {
+                if (darkIconTintResolverFailureReported.compareAndSet(false, true)) {
+                    onEvent("appearance-tint-unavailable", "DarkIconDispatcher#getTint not found")
+                }
+                return null
+            }
+            darkIconTintMethod = resolved
+            resolved
+        }
+        return runCatching { method.invoke(null, areas, view, tint) as? Int }
+            .onFailure { error ->
+                if (darkIconTintResolverFailureReported.compareAndSet(false, true)) onError(error)
+            }
+            .getOrNull()
     }
 
     private fun installMergedBatteryViewHooks() = guarded {
